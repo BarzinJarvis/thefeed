@@ -392,7 +392,7 @@ func (f *Fetcher) FetchChannel(ctx context.Context, channelNum int, blockCount i
 		}
 		ordered[r.idx] = r.data
 		completed++
-		f.logProgress(fmt.Sprintf("Channel %d", channelNum), float64(completed), float64(blockCount))
+		f.logProgress(fmt.Sprintf("Channel %d (%d/%d)", channelNum, completed, blockCount), float64(completed), float64(blockCount))
 	}
 
 	var allData []byte

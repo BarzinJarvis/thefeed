@@ -58,6 +58,7 @@ type TelegramReader struct {
 	cfg      TelegramConfig
 	channels []string // channel usernames without @
 	feed     *Feed
+	msgLimit int // max messages to fetch per channel
 
 	mu       sync.RWMutex
 	cache    map[string]cachedMessages
@@ -70,15 +71,19 @@ type cachedMessages struct {
 }
 
 // NewTelegramReader creates a reader for the given channel usernames.
-func NewTelegramReader(cfg TelegramConfig, channelUsernames []string, feed *Feed) *TelegramReader {
+func NewTelegramReader(cfg TelegramConfig, channelUsernames []string, feed *Feed, msgLimit int) *TelegramReader {
 	cleaned := make([]string, len(channelUsernames))
 	for i, u := range channelUsernames {
 		cleaned[i] = strings.TrimPrefix(strings.TrimSpace(u), "@")
+	}
+	if msgLimit <= 0 {
+		msgLimit = 15
 	}
 	return &TelegramReader{
 		cfg:      cfg,
 		channels: cleaned,
 		feed:     feed,
+		msgLimit: msgLimit,
 		cache:    make(map[string]cachedMessages),
 		cacheTTL: 15 * time.Minute,
 	}
@@ -211,7 +216,7 @@ func (tr *TelegramReader) fetchChannel(ctx context.Context, api *tg.Client, user
 
 	hist, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 		Peer:  peer,
-		Limit: 100,
+		Limit: tr.msgLimit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get history %s: %w", username, err)

@@ -18,6 +18,7 @@ type Config struct {
 	Passphrase   string
 	ChannelsFile string
 	MaxPadding   int
+	MsgLimit     int // max messages per channel (0 = default 15)
 	Telegram     TelegramConfig
 }
 
@@ -52,12 +53,16 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Handle login-only mode
 	if s.cfg.Telegram.LoginOnly {
-		reader := NewTelegramReader(s.cfg.Telegram, s.feed.ChannelNames(), s.feed)
+		reader := NewTelegramReader(s.cfg.Telegram, s.feed.ChannelNames(), s.feed, 15)
 		return reader.Run(ctx)
 	}
 
 	// Start Telegram reader in background
-	reader := NewTelegramReader(s.cfg.Telegram, s.feed.ChannelNames(), s.feed)
+	msgLimit := s.cfg.MsgLimit
+	if msgLimit <= 0 {
+		msgLimit = 15
+	}
+	reader := NewTelegramReader(s.cfg.Telegram, s.feed.ChannelNames(), s.feed, msgLimit)
 	go func() {
 		if err := reader.Run(ctx); err != nil {
 			log.Printf("[telegram] error: %v", err)

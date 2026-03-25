@@ -9,11 +9,11 @@ import (
 
 const (
 	// MinBlockPayload is the minimum decrypted payload per DNS TXT block.
-	MinBlockPayload = 200
+	MinBlockPayload = 400
 	// MaxBlockPayload is the maximum decrypted payload per DNS TXT block.
-	// 600 bytes data + 28 GCM overhead + 2 prefix + 32 padding → ~856 base64 chars.
+	// 700 bytes data + 28 GCM overhead + 2 prefix + 32 padding → ~996 base64 chars.
 	// Well within the 4096-byte EDNS0 UDP buffer the client advertises.
-	MaxBlockPayload = 600
+	MaxBlockPayload = 700
 	// DefaultBlockPayload is kept for compatibility; equals MaxBlockPayload.
 	DefaultBlockPayload = MaxBlockPayload
 

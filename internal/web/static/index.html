@@ -496,11 +496,12 @@
         }
 
         function updateProgressDisplay(line) {
-            // Parse progress from "Channel N [====>    ] 45%"
-            var match = line.match(/Channel\s+(\d+)/);
+            // Parse progress from "Channel N (received/total) [====>    ] 45%"
+            var match = line.match(/Channel\s+(\d+)\s*(?:\((\d+\/\d+)\))?/);
             if (!match) return;
             
             var channelNum = match[1];
+            var counts = match[2] || '';
             var percentMatch = line.match(/(\d+)%/);
             var percent = percentMatch ? parseInt(percentMatch[1]) : 0;
             
@@ -508,15 +509,18 @@
             var itemId = 'progress-current';
             var item = document.getElementById(itemId);
             
+            var label = 'Channel ' + channelNum;
+            if (counts) label += ' (' + counts + ')';
+
             if (!item) {
                 item = document.createElement('div');
                 item.id = itemId;
                 item.className = 'progress-item';
-                item.innerHTML = '<div class="progress-label">Channel ' + channelNum + '</div>' +
+                item.innerHTML = '<div class="progress-label">' + label + '</div>' +
                     '<div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>';
                 panel.appendChild(item);
             } else {
-                item.querySelector('.progress-label').textContent = 'Channel ' + channelNum;
+                item.querySelector('.progress-label').textContent = label;
             }
             
             var fill = item.querySelector('.progress-fill');

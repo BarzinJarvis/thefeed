@@ -31,6 +31,7 @@ func main() {
 	loginOnly := flag.Bool("login-only", false, "Authenticate to Telegram, save session, and exit")
 	sessionPath := flag.String("session", "", "Path to Telegram session file (default: {data-dir}/session.json)")
 	maxPadding := flag.Int("padding", 32, "Max random padding bytes in DNS responses (anti-DPI, 0=disabled)")
+	msgLimit := flag.Int("msg-limit", 15, "Maximum messages to fetch per Telegram channel")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	flag.Parse()
 
@@ -107,6 +108,7 @@ func main() {
 		Passphrase:   *key,
 		ChannelsFile: *channelsFile,
 		MaxPadding:   *maxPadding,
+		MsgLimit:     *msgLimit,
 		Telegram: server.TelegramConfig{
 			APIID:       id,
 			APIHash:     *apiHash,
