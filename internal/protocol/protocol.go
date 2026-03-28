@@ -1,9 +1,13 @@
 package protocol
 
 import (
+	"bytes"
+	"compress/flate"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"math/big"
 )
 
@@ -11,8 +15,8 @@ const (
 	// MinBlockPayload is the minimum decrypted payload per DNS TXT block.
 	MinBlockPayload = 400
 	// MaxBlockPayload is the maximum decrypted payload per DNS TXT block.
-	// 700 bytes data + 28 GCM overhead + 2 prefix + 32 padding → ~996 base64 chars.
-	// Well within the 4096-byte EDNS0 UDP buffer the client advertises.
+	// 700 bytes data + 28 GCM overhead + 2 prefix + 32 padding → ~1016 base64 chars.
+	// Fits within the standard 1232-byte EDNS0 UDP buffer (DNS Flag Day 2020).
 	MaxBlockPayload = 700
 	// DefaultBlockPayload is kept for compatibility; equals MaxBlockPayload.
 	DefaultBlockPayload = MaxBlockPayload
@@ -36,10 +40,11 @@ const (
 	QueryPayloadSize = QueryPaddingSize + QueryChannelSize + QueryBlockSize // 8
 
 	// Message header sizes (in the serialized message stream).
-	MsgIDSize        = 4
-	MsgTimestampSize = 4
-	MsgLengthSize    = 2
-	MsgHeaderSize    = MsgIDSize + MsgTimestampSize + MsgLengthSize // 10
+	MsgIDSize          = 4
+	MsgTimestampSize   = 4
+	MsgLengthSize      = 2
+	MsgHeaderSize      = MsgIDSize + MsgTimestampSize + MsgLengthSize // 10
+	MsgContentHashSize = 4
 )
 
 // Media placeholder strings for non-text content.
@@ -55,18 +60,31 @@ const (
 	MediaLocation = "[LOCATION]"
 )
 
+// ChatType distinguishes channel types in metadata.
+type ChatType uint8
+
+const (
+	ChatTypeChannel ChatType = 0 // public Telegram channel
+	ChatTypePrivate ChatType = 1 // private chat / bot
+)
+
 // Metadata holds channel 0 data: server info + channel list.
 type Metadata struct {
-	Marker    [MarkerSize]byte
-	Timestamp uint32
-	Channels  []ChannelInfo
+	Marker           [MarkerSize]byte
+	Timestamp        uint32
+	NextFetch        uint32 // unix timestamp of next server-side fetch (0 = unknown)
+	TelegramLoggedIn bool   // true if server has an active Telegram session
+	Channels         []ChannelInfo
 }
 
 // ChannelInfo describes a single feed channel.
 type ChannelInfo struct {
-	Name      string
-	Blocks    uint16
-	LastMsgID uint32
+	Name        string
+	Blocks      uint16
+	LastMsgID   uint32
+	ContentHash uint32   // CRC32 of serialized message data; changes on edits
+	ChatType    ChatType // 0=channel, 1=private
+	CanSend     bool     // true if server allows sending messages to this chat
 }
 
 // Message represents a single feed message in a channel.
@@ -76,12 +94,21 @@ type Message struct {
 	Text      string
 }
 
+// ContentHashOf computes a CRC32 hash of serialized message data.
+// This changes when any message is edited, even if IDs stay the same.
+func ContentHashOf(msgs []Message) uint32 {
+	data := SerializeMessages(msgs)
+	return crc32.ChecksumIEEE(data)
+}
+
 // SerializeMetadata encodes metadata into bytes for channel 0 blocks.
+// Format: marker(3) + timestamp(4) + nextFetch(4) + flags(1) + channelCount(2) + per-channel data
+// Per-channel: nameLen(1) + name + blocks(2) + lastMsgID(4) + contentHash(4) + chatType(1) + flags(1)
 func SerializeMetadata(m *Metadata) []byte {
-	// 3 marker + 4 timestamp + 2 channel count + per-channel data
-	size := MarkerSize + 4 + 2
+	// 3 marker + 4 timestamp + 4 nextFetch + 1 flags + 2 channel count + per-channel data
+	size := MarkerSize + 4 + 4 + 1 + 2
 	for _, ch := range m.Channels {
-		size += 1 + len(ch.Name) + 2 + 4
+		size += 1 + len(ch.Name) + 2 + 4 + 4 + 1 + 1 // +4 for contentHash
 	}
 	buf := make([]byte, size)
 	off := 0
@@ -91,6 +118,16 @@ func SerializeMetadata(m *Metadata) []byte {
 
 	binary.BigEndian.PutUint32(buf[off:], m.Timestamp)
 	off += 4
+
+	binary.BigEndian.PutUint32(buf[off:], m.NextFetch)
+	off += 4
+
+	var flags byte
+	if m.TelegramLoggedIn {
+		flags |= 0x01
+	}
+	buf[off] = flags
+	off++
 
 	binary.BigEndian.PutUint16(buf[off:], uint16(len(m.Channels)))
 	off += 2
@@ -108,6 +145,16 @@ func SerializeMetadata(m *Metadata) []byte {
 		off += 2
 		binary.BigEndian.PutUint32(buf[off:], ch.LastMsgID)
 		off += 4
+		binary.BigEndian.PutUint32(buf[off:], ch.ContentHash)
+		off += 4
+		buf[off] = byte(ch.ChatType)
+		off++
+		var chFlags byte
+		if ch.CanSend {
+			chFlags |= 0x01
+		}
+		buf[off] = chFlags
+		off++
 	}
 
 	return buf
@@ -115,7 +162,8 @@ func SerializeMetadata(m *Metadata) []byte {
 
 // ParseMetadata decodes metadata from concatenated channel 0 block data.
 func ParseMetadata(data []byte) (*Metadata, error) {
-	if len(data) < MarkerSize+4+2 {
+	// Minimum: marker(3) + timestamp(4) + nextFetch(4) + flags(1) + count(2) = 14
+	if len(data) < MarkerSize+4+4+1+2 {
 		return nil, fmt.Errorf("metadata too short: %d bytes", len(data))
 	}
 	m := &Metadata{}
@@ -126,6 +174,13 @@ func ParseMetadata(data []byte) (*Metadata, error) {
 
 	m.Timestamp = binary.BigEndian.Uint32(data[off:])
 	off += 4
+
+	m.NextFetch = binary.BigEndian.Uint32(data[off:])
+	off += 4
+
+	flags := data[off]
+	off++
+	m.TelegramLoggedIn = flags&0x01 != 0
 
 	count := binary.BigEndian.Uint16(data[off:])
 	off += 2
@@ -143,18 +198,27 @@ func ParseMetadata(data []byte) (*Metadata, error) {
 		name := string(data[off : off+nameLen])
 		off += nameLen
 
-		if off+6 > len(data) {
+		if off+12 > len(data) {
 			return nil, fmt.Errorf("truncated channel info at %d", i)
 		}
 		blocks := binary.BigEndian.Uint16(data[off:])
 		off += 2
 		lastID := binary.BigEndian.Uint32(data[off:])
 		off += 4
+		contentHash := binary.BigEndian.Uint32(data[off:])
+		off += 4
+		chatType := ChatType(data[off])
+		off++
+		chFlags := data[off]
+		off++
 
 		m.Channels = append(m.Channels, ChannelInfo{
-			Name:      name,
-			Blocks:    blocks,
-			LastMsgID: lastID,
+			Name:        name,
+			Blocks:      blocks,
+			LastMsgID:   lastID,
+			ContentHash: contentHash,
+			ChatType:    chatType,
+			CanSend:     chFlags&0x01 != 0,
 		})
 	}
 
@@ -244,4 +308,59 @@ func randBlockSize() int {
 		return (MinBlockPayload + MaxBlockPayload) / 2
 	}
 	return MinBlockPayload + int(n.Int64())
+}
+
+const (
+	// compressionNone means no compression applied (raw serialized messages).
+	compressionNone byte = 0x00
+	// compressionDeflate means data is deflate-compressed.
+	compressionDeflate byte = 0x01
+)
+
+// CompressMessages compresses serialized message data using deflate.
+// The output has a 1-byte header (compression type) followed by the payload.
+// If compression doesn't reduce size, the raw data is stored instead.
+func CompressMessages(data []byte) []byte {
+	if len(data) == 0 {
+		return append([]byte{compressionNone}, data...)
+	}
+
+	var buf bytes.Buffer
+	w, err := flate.NewWriter(&buf, flate.BestCompression)
+	if err != nil {
+		return append([]byte{compressionNone}, data...)
+	}
+	w.Write(data)
+	w.Close()
+
+	compressed := buf.Bytes()
+	if len(compressed) >= len(data) {
+		// Compression didn't help — store raw
+		return append([]byte{compressionNone}, data...)
+	}
+
+	return append([]byte{compressionDeflate}, compressed...)
+}
+
+// DecompressMessages decompresses data produced by CompressMessages.
+// Reads the 1-byte header to determine the compression type.
+func DecompressMessages(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty compressed data")
+	}
+
+	switch data[0] {
+	case compressionNone:
+		return data[1:], nil
+	case compressionDeflate:
+		r := flate.NewReader(bytes.NewReader(data[1:]))
+		defer r.Close()
+		out, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("deflate decompress: %w", err)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unknown compression type: 0x%02x", data[0])
+	}
 }

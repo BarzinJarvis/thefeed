@@ -36,13 +36,20 @@ jobs:
             goarch: arm64
           - goos: windows
             goarch: amd64
+          - goos: android
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
 
+      - name: Install UPX
+        if: matrix.goos == 'linux' || matrix.goos == 'windows' || matrix.goos == 'android'
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl
+
       - name: Build Server
+        if: matrix.goos != 'android'
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -69,6 +76,15 @@ jobs:
           ext=""
           if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
           go build -trimpath -ldflags="${LDFLAGS}" -o build/thefeed-client-${{ matrix.goos }}-${{ matrix.goarch }}${ext} ./cmd/client
+
+      - name: Compress with UPX
+        if: matrix.goos == 'linux' || matrix.goos == 'windows' || matrix.goos == 'android'
+        run: |
+          for f in build/*; do
+            if [ -f "$f" ]; then
+              upx --best --lzma "$f" || true
+            fi
+          done
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -24,6 +24,7 @@
             --text-dim: #71717a;
             --success: #22c55e;
             --error: #ef4444;
+            --send-color: #0ea5e9;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -47,7 +48,8 @@
         }
         .header-left { display: flex; align-items: center; gap: 10px; }
         .header h1 { font-size: 16px; font-weight: 600; }
-        .header-actions { display: flex; gap: 8px; }
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+        .next-fetch-timer { font-size: 11px; color: var(--text-dim); }
 
         .status-dot {
             width: 8px; height: 8px;
@@ -99,12 +101,33 @@
             border-left: 3px solid transparent;
             transition: all 0.15s;
             font-size: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         .channel-item:hover { background: var(--surface2); }
         .channel-item.active {
             background: var(--surface2);
             border-left-color: var(--accent);
             color: white;
+        }
+        .channel-type-badge {
+            font-size: 10px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            background: var(--surface2);
+            color: var(--text-dim);
+            margin-left: 4px;
+        }
+        .channel-type-badge.private { background: #3b1f4e; color: #c084fc; }
+        .new-msg-badge {
+            background: var(--accent);
+            color: white;
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 10px;
+            min-width: 18px;
+            text-align: center;
         }
 
         .content {
@@ -141,6 +164,46 @@
             white-space: pre-wrap;
             word-break: break-word;
         }
+        .media-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: var(--surface2);
+            color: var(--text-dim);
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        .send-panel {
+            display: none;
+            padding: 8px 12px;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            direction: rtl;
+        }
+        .send-panel.visible { display: flex; gap: 8px; align-items: center; }
+        .send-input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg);
+            color: var(--text);
+            font-family: inherit;
+            font-size: 14px;
+            direction: rtl;
+        }
+        .send-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            background: var(--send-color);
+            color: white;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 13px;
+        }
+        .send-btn:hover { background: #0284c7; }
 
         .progress-panel {
             height: 56px;
@@ -179,6 +242,7 @@
             background: var(--accent);
             transition: width 0.2s;
         }
+        .progress-fill.send { background: var(--send-color); }
 
         .log-panel {
             height: 150px;
@@ -258,6 +322,30 @@
         }
         .empty-state p { font-size: 14px; }
 
+        .footer-link {
+            padding: 12px 16px;
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-dim);
+            border-top: 1px solid var(--border);
+            margin-top: auto;
+        }
+        .footer-link a { color: var(--accent); text-decoration: none; }
+        .footer-link a:hover { text-decoration: underline; }
+        .footer-link .free-iran { color: var(--success); font-weight: bold; }
+
+        .tg-warning {
+            background: #3b1f1f;
+            border: 1px solid #7f1d1d;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 12px;
+            color: #fca5a5;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .tg-warning.visible { display: block; }
+
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -269,6 +357,7 @@
         <div class="header-left">
             <h1>thefeed</h1>
             <span class="status-dot disconnected" id="statusDot"></span>
+            <span class="next-fetch-timer" id="nextFetchTimer"></span>
         </div>
         <div class="header-actions">
             <button class="btn" onclick="doRefresh()">Refresh</button>
@@ -278,9 +367,15 @@
 
     <div class="main">
         <div class="sidebar">
-            <div class="sidebar-title">Channels</div>
+            <div class="sidebar-title" style="display:flex;justify-content:space-between;align-items:center;">Channels
+                <button class="btn" style="padding:2px 8px;font-size:12px;" onclick="openChannelManager()" title="Manage channels">&#9998;</button>
+            </div>
             <div id="channelList">
                 <div style="padding:16px;color:var(--text-dim);font-size:13px;">No channels</div>
+            </div>
+            <div class="footer-link">
+                <a href="https://github.com/sartoopjj/thefeed" target="_blank">GitHub</a>
+                &middot; <span class="free-iran">For FREE IRAN</span>
             </div>
         </div>
 
@@ -291,14 +386,43 @@
                     <button class="btn btn-primary" onclick="openSettings()">Configure</button>
                 </div>
             </div>
+            <div class="send-panel" id="sendPanel">
+                <input type="text" class="send-input" id="sendInput" placeholder="Type a message..." maxlength="4000">
+                <button class="send-btn" onclick="sendMessage()">Send</button>
+            </div>
             <div class="progress-panel" id="progressPanel"></div>
             <div class="log-panel" id="logPanel"></div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="channelModal">
+        <div class="modal">
+            <h2>Manage Channels</h2>
+            <div class="form-group">
+                <label>Add Channel (username without @)</label>
+                <div style="display:flex;gap:8px;">
+                    <input type="text" id="addChannelInput" placeholder="channel_username">
+                    <button class="btn btn-primary" onclick="addChannel()">Add</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Current Channels</label>
+                <div id="channelManagerList" style="max-height:200px;overflow-y:auto;"></div>
+            </div>
+            <div id="channelManagerError" style="color:var(--error);margin-top:8px;font-size:13px;display:none;"></div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">
+                <button class="btn" onclick="closeChannelManager()">Close</button>
+            </div>
         </div>
     </div>
 
     <div class="modal-overlay" id="settingsModal">
         <div class="modal">
             <h2>Settings</h2>
+            <div id="tgWarning" class="tg-warning">
+                Server is running without Telegram login. Some features (sending messages, private chats) are unavailable.
+                To enable, restart the server with Telegram credentials.
+            </div>
             <div class="form-group">
                 <label>Domain</label>
                 <input type="text" id="cfgDomain" placeholder="t.example.com">
@@ -316,7 +440,6 @@
                 <select id="cfgQueryMode">
                     <option value="single">Single label (base32, stealthier)</option>
                     <option value="double">Multi-label (hex)</option>
-                    <option value="plain">Plain text (no query encryption)</option>
                 </select>
             </div>
             <div class="form-group">
@@ -324,43 +447,74 @@
                 <input type="number" id="cfgRateLimit" value="5" min="0" step="0.1">
             </div>
             <div class="form-group" style="flex-direction:row;align-items:center;gap:10px;">
-                <input type="checkbox" id="cfgDebug" style="width:auto;margin:0;">
+                <input type="checkbox" id="cfgDebug" checked style="width:auto;margin:0;">
                 <label for="cfgDebug" style="margin:0;cursor:pointer;">Debug mode (log generated query names)</label>
             </div>
             <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px;">
                 <button class="btn" onclick="closeSettings()">Cancel</button>
-                <button class="btn btn-primary" onclick="saveConfig()">Save & Connect</button>
+                <button class="btn btn-primary" onclick="saveConfig()">Save &amp; Connect</button>
             </div>
             <div id="settingsError" style="color:var(--error);margin-top:12px;font-size:13px;display:none;"></div>
+            <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);text-align:center;">
+                <a href="https://github.com/sartoopjj/thefeed" target="_blank" style="color:var(--accent);font-size:12px;text-decoration:none;">github.com/sartoopjj/thefeed</a>
+                <div style="margin-top:6px;font-size:12px;" class="free-iran">For FREE IRAN</div>
+            </div>
         </div>
     </div>
 
     <script>
-        let selectedChannel = 0;
-        let channels = [];
-        let eventSource = null;
-        let autoRefreshTimer = null;
+        var selectedChannel = 0;
+        var channels = [];
+        var eventSource = null;
+        var autoRefreshTimer = null;
+        var telegramLoggedIn = false;
+
+        var serverNextFetch = 0;
+        var nextFetchInterval = null;
+        var previousMsgIDs = {};
+        var newMsgCount = 0;
+        var originalTitle = document.title;
+
+        function getFirstVisibleChannel() {
+            if (channels.length > 0) return 1;
+            return 0;
+        }
 
         async function init() {
             try {
-                const resp = await fetch('/api/status');
-                const status = await resp.json();
+                var resp = await fetch('/api/status');
+                var status = await resp.json();
                 if (!status.configured) {
                     openSettings();
                 } else {
                     document.getElementById('statusDot').className = 'status-dot connected';
+                    telegramLoggedIn = !!status.telegramLoggedIn;
+                    serverNextFetch = status.nextFetch || 0;
+                    updateNextFetchDisplay();
                     await loadChannels();
                     if (channels && channels.length > 0) {
-                        await selectChannel(1);
+                        var firstVisible = getFirstVisibleChannel();
+                        if (firstVisible > 0) {
+                            await selectChannel(firstVisible);
+                        }
                     } else {
-                        // No channels cached yet; the server's initial refresh
-                        // will push an SSE update when metadata arrives.
+                        showInitProgress();
                         await doRefresh();
                     }
                     startAutoRefresh();
                 }
             } catch (e) {}
             connectSSE();
+        }
+
+        function showInitProgress() {
+            var panel = document.getElementById('progressPanel');
+            var item = document.createElement('div');
+            item.id = 'progress-current';
+            item.className = 'progress-item';
+            item.innerHTML = '<div class="progress-label">Starting to get metadata...</div>' +
+                '<div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>';
+            panel.appendChild(item);
         }
 
         function startAutoRefresh() {
@@ -372,6 +526,27 @@
             }, 600000);
         }
 
+        function updateNextFetchDisplay() {
+            if (nextFetchInterval) clearInterval(nextFetchInterval);
+            if (!serverNextFetch) {
+                document.getElementById('nextFetchTimer').textContent = '';
+                return;
+            }
+            function tick() {
+                var now = Math.floor(Date.now() / 1000);
+                var diff = serverNextFetch - now;
+                if (diff <= 0) {
+                    document.getElementById('nextFetchTimer').textContent = 'Server refreshing...';
+                    return;
+                }
+                var m = Math.floor(diff / 60);
+                var s = diff % 60;
+                document.getElementById('nextFetchTimer').textContent = 'Server refresh in ' + m + ':' + (s < 10 ? '0' : '') + s;
+            }
+            tick();
+            nextFetchInterval = setInterval(tick, 1000);
+        }
+
         function connectSSE() {
             if (eventSource) eventSource.close();
             eventSource = new EventSource('/api/events');
@@ -380,17 +555,35 @@
             });
             eventSource.addEventListener('update', async function(e) {
                 var wasEmpty = channels.length === 0;
+                var oldIDs = {};
+                for (var i = 0; i < channels.length; i++) {
+                    oldIDs[i + 1] = channels[i].LastMsgID || channels[i].lastMsgID || 0;
+                }
                 await loadChannels();
+                var hasNew = false;
+                for (var i = 0; i < channels.length; i++) {
+                    var newID = channels[i].LastMsgID || channels[i].lastMsgID || 0;
+                    var oldID = oldIDs[i + 1] || 0;
+                    if (oldID > 0 && newID > oldID && (i + 1) !== selectedChannel) {
+                        hasNew = true;
+                    }
+                }
+                if (hasNew) {
+                    newMsgCount++;
+                    document.title = '(' + newMsgCount + ') ' + originalTitle;
+                }
                 if (wasEmpty && channels.length > 0 && selectedChannel === 0) {
-                    // Channels just appeared for the first time — auto-select the first one.
-                    selectChannel(1);
+                    var firstVisible = getFirstVisibleChannel();
+                    if (firstVisible > 0) {
+                        selectChannel(firstVisible);
+                    }
                 } else if (selectedChannel > 0) {
-                    loadMessages(selectedChannel);
+                    await loadMessages(selectedChannel);
+                    updateSendPanel();
                 }
             });
             eventSource.onerror = function() {
                 document.getElementById('statusDot').className = 'status-dot disconnected';
-                // EventSource.CLOSED (2) means the browser stopped retrying — reconnect manually.
                 if (eventSource.readyState === EventSource.CLOSED) {
                     eventSource.close();
                     setTimeout(connectSSE, 3000);
@@ -408,20 +601,79 @@
                 return;
             }
             var html = '';
+            var privates = [];
+            var publics = [];
             for (var i = 0; i < channels.length; i++) {
-                var num = i + 1;
-                var active = num === selectedChannel ? ' active' : '';
-                var name = channels[i].Name || channels[i].name || 'Channel ' + num;
-                html += '<div class="channel-item' + active + '" onclick="selectChannel(' + num + ')">' + escapeHtml(name) + '</div>';
+                var ch = channels[i];
+                var ct = ch.ChatType || ch.chatType || 0;
+                var entry = {ch: ch, idx: i};
+                if (ct === 1) privates.push(entry);
+                else publics.push(entry);
             }
+
+            function renderSection(title, items) {
+                if (items.length === 0) return '';
+                var h = '';
+                if (title) h += '<div class="sidebar-title" style="padding-top:8px;">' + title + '</div>';
+                for (var j = 0; j < items.length; j++) {
+                    var e = items[j];
+                    var num = e.idx + 1;
+                    var active = num === selectedChannel ? ' active' : '';
+                    var name = e.ch.Name || e.ch.name || 'Channel ' + num;
+                    var ct2 = e.ch.ChatType || e.ch.chatType || 0;
+                    var badge = '';
+                    if (ct2 === 1) badge = '<span class="channel-type-badge private">Private</span>';
+                    var newBadge = '';
+                    var lastID = e.ch.LastMsgID || e.ch.lastMsgID || 0;
+                    var prevID = previousMsgIDs[num] || 0;
+                    if (prevID > 0 && lastID > prevID) {
+                        newBadge = '<span class="new-msg-badge">NEW</span>';
+                    }
+                    h += '<div class="channel-item' + active + '" onclick="selectChannel(' + num + ')">' +
+                        '<span>' + escapeHtml(name) + badge + '</span>' +
+                        newBadge + '</div>';
+                }
+                return h;
+            }
+
+            html += renderSection('', publics);
+            html += renderSection('Private', privates);
             el.innerHTML = html;
         }
 
         async function selectChannel(num) {
             selectedChannel = num;
+            newMsgCount = 0;
+            document.title = originalTitle;
             renderChannels();
-            await doRefresh(true);
+            updateSendPanel();
+            document.getElementById('messages').innerHTML = '<div class="empty-state"><p>Loading...</p></div>';
+
+            var panel = document.getElementById('progressPanel');
+            var item = document.getElementById('progress-current');
+            if (!item) {
+                item = document.createElement('div');
+                item.id = 'progress-current';
+                item.className = 'progress-item';
+                panel.appendChild(item);
+            }
+            var chName = (channels[num - 1] && (channels[num - 1].Name || channels[num - 1].name)) || 'Channel ' + num;
+            item.innerHTML = '<div class="progress-label">' + escapeHtml(chName) + '</div>' +
+                '<div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>';
+
             await loadMessages(num);
+            await doRefresh(true);
+        }
+
+        function updateSendPanel() {
+            var panel = document.getElementById('sendPanel');
+            var ch = channels[selectedChannel - 1];
+            var canSend = !!(ch && (ch.CanSend || ch.canSend));
+            if (selectedChannel > 0 && telegramLoggedIn && canSend) {
+                panel.classList.add('visible');
+            } else {
+                panel.classList.remove('visible');
+            }
         }
 
         async function loadChannels() {
@@ -430,14 +682,28 @@
                 channels = await resp.json();
                 if (!channels) channels = [];
                 renderChannels();
+                updateSendPanel();
+                var sr = await fetch('/api/status');
+                var st = await sr.json();
+                telegramLoggedIn = !!st.telegramLoggedIn;
+                if (st.nextFetch) {
+                    serverNextFetch = st.nextFetch;
+                    updateNextFetchDisplay();
+                }
             } catch (e) {}
         }
 
         async function loadMessages(chNum) {
             try {
                 var resp = await fetch('/api/messages/' + chNum);
+                if (chNum !== selectedChannel) return;
                 var msgs = await resp.json();
+                if (chNum !== selectedChannel) return;
                 renderMessages(msgs);
+                if (channels[chNum - 1]) {
+                    previousMsgIDs[chNum] = channels[chNum - 1].LastMsgID || channels[chNum - 1].lastMsgID || 0;
+                    renderChannels();
+                }
             } catch (e) {}
         }
 
@@ -454,13 +720,24 @@
                 var timeStr = ts.toLocaleTimeString('fa-IR', {hour: '2-digit', minute: '2-digit'});
                 var dateStr = ts.toLocaleDateString('fa-IR', {month: 'short', day: 'numeric'});
                 var id = msg.ID || msg.id;
-                var text = escapeHtml(msg.Text || msg.text || '');
+                var text = msg.Text || msg.text || '';
+                var mediaHtml = '';
+                var textHtml = escapeHtml(text);
+                var mediaTypes = ['[IMAGE]', '[VIDEO]', '[FILE]', '[AUDIO]', '[STICKER]', '[GIF]', '[POLL]', '[CONTACT]', '[LOCATION]'];
+                for (var m = 0; m < mediaTypes.length; m++) {
+                    if (text.indexOf(mediaTypes[m]) === 0) {
+                        mediaHtml = '<div class="media-tag">' + mediaTypes[m] + '</div>';
+                        textHtml = escapeHtml(text.substring(mediaTypes[m].length).replace(/^\n/, ''));
+                        break;
+                    }
+                }
                 html += '<div class="message">' +
                     '<div class="message-header">' +
                     '<span>#' + id + '</span>' +
                     '<span>' + timeStr + ' ' + dateStr + '</span>' +
                     '</div>' +
-                    '<div class="message-text">' + text + '</div>' +
+                    mediaHtml +
+                    '<div class="message-text">' + textHtml + '</div>' +
                     '</div>';
             }
             el.innerHTML = html;
@@ -470,13 +747,11 @@
             var el = document.getElementById('logPanel');
             var div = document.createElement('div');
             div.className = 'log-line';
-
-            // Parse log level from line content
             var level = 'info';
-            var displayText = line;
-            
             if (typeof line === 'string') {
-                if (line.includes('Error:') || line.includes('error') || line.includes('Error')) {
+                if (line.includes('Invalid passphrase')) {
+                    level = 'error';
+                } else if (line.includes('Error:') || line.includes('error') || line.includes('Error')) {
                     level = 'error';
                 } else if (line.includes('Warning:') || line.includes('warning') || line.includes('Warning')) {
                     level = 'warning';
@@ -486,37 +761,31 @@
                     level = 'progress';
                     updateProgressDisplay(line);
                     return;
+                } else if (line.includes('no new messages')) {
+                    level = 'info';
                 }
             }
-            
             div.className = 'log-line ' + level;
             div.textContent = line;
             el.appendChild(div);
             el.scrollTop = el.scrollHeight;
-            
-            // Keep only last 200 lines
             while (el.children.length > 200) {
                 el.removeChild(el.firstChild);
             }
         }
 
         function updateProgressDisplay(line) {
-            // Parse progress from "Channel N (received/total) [====>    ] 45%"
             var match = line.match(/Channel\s+(\d+)\s*(?:\((\d+\/\d+)\))?/);
             if (!match) return;
-            
             var channelNum = match[1];
             var counts = match[2] || '';
             var percentMatch = line.match(/(\d+)%/);
             var percent = percentMatch ? parseInt(percentMatch[1]) : 0;
-            
             var panel = document.getElementById('progressPanel');
             var itemId = 'progress-current';
             var item = document.getElementById(itemId);
-            
             var label = 'Channel ' + channelNum;
             if (counts) label += ' (' + counts + ')';
-
             if (!item) {
                 item = document.createElement('div');
                 item.id = itemId;
@@ -527,11 +796,8 @@
             } else {
                 item.querySelector('.progress-label').textContent = label;
             }
-            
             var fill = item.querySelector('.progress-fill');
             fill.style.width = percent + '%';
-            
-            // Remove if complete
             if (percent >= 100) {
                 setTimeout(function() {
                     if (item.parentNode) item.parentNode.removeChild(item);
@@ -549,11 +815,41 @@
                     url += (url.includes('?') ? '&' : '?') + 'quiet=1';
                 }
                 await fetch(url, {method: 'POST'});
+                // For manual refresh, reload messages after delay as fallback
+                if (!quiet && selectedChannel > 0) {
+                    setTimeout(function() {
+                        loadChannels();
+                        loadMessages(selectedChannel);
+                    }, 3000);
+                }
             } catch (e) {}
+        }
+
+        async function sendMessage() {
+            var input = document.getElementById('sendInput');
+            var text = input.value.trim();
+            if (!text || !selectedChannel) return;
+            try {
+                var resp = await fetch('/api/send', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({channel: selectedChannel, text: text})
+                });
+                if (resp.ok) {
+                    input.value = '';
+                    addLogLine('Message sent successfully');
+                } else {
+                    var errText = await resp.text();
+                    addLogLine('Error sending message: ' + errText);
+                }
+            } catch (e) {
+                addLogLine('Error: ' + e.message);
+            }
         }
 
         function openSettings() {
             document.getElementById('settingsModal').classList.add('active');
+            document.getElementById('tgWarning').classList.toggle('visible', !telegramLoggedIn && channels.length > 0);
             fetch('/api/config').then(function(r) { return r.json(); }).then(function(cfg) {
                 if (cfg.domain) document.getElementById('cfgDomain').value = cfg.domain;
                 if (cfg.key) document.getElementById('cfgKey').value = cfg.key;
@@ -564,7 +860,7 @@
                 } else {
                     document.getElementById('cfgRateLimit').value = 5;
                 }
-                document.getElementById('cfgDebug').checked = !!cfg.debug;
+                document.getElementById('cfgDebug').checked = cfg.debug !== undefined ? !!cfg.debug : true;
             }).catch(function() {});
         }
 
@@ -576,10 +872,8 @@
         async function saveConfig() {
             var errEl = document.getElementById('settingsError');
             errEl.style.display = 'none';
-
             var resolversText = document.getElementById('cfgResolvers').value.trim();
             var resolvers = resolversText.split(/[\n,]+/).map(function(s) { return s.trim(); }).filter(function(s) { return s; });
-
             var cfg = {
                 domain: document.getElementById('cfgDomain').value.trim(),
                 key: document.getElementById('cfgKey').value,
@@ -588,13 +882,11 @@
                 rateLimit: parseFloat(document.getElementById('cfgRateLimit').value) || 5,
                 debug: document.getElementById('cfgDebug').checked
             };
-
             if (!cfg.domain || !cfg.key || resolvers.length === 0) {
                 errEl.textContent = 'Domain, passphrase, and at least one resolver are required.';
                 errEl.style.display = 'block';
                 return;
             }
-
             try {
                 var resp = await fetch('/api/config', {
                     method: 'POST',
@@ -607,10 +899,14 @@
                 }
                 closeSettings();
                 document.getElementById('statusDot').className = 'status-dot connected';
+                showInitProgress();
                 await doRefresh();
                 await loadChannels();
                 if (channels && channels.length > 0) {
-                    await selectChannel(1);
+                    var firstVisible = getFirstVisibleChannel();
+                    if (firstVisible > 0) {
+                        await selectChannel(firstVisible);
+                    }
                 }
                 startAutoRefresh();
             } catch (e) {
@@ -624,6 +920,110 @@
             div.appendChild(document.createTextNode(s));
             return div.innerHTML;
         }
+
+        function openChannelManager() {
+            document.getElementById('channelModal').classList.add('active');
+            document.getElementById('channelManagerError').style.display = 'none';
+            loadChannelManagerList();
+        }
+
+        function closeChannelManager() {
+            document.getElementById('channelModal').classList.remove('active');
+        }
+
+        async function loadChannelManagerList() {
+            var el = document.getElementById('channelManagerList');
+            el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">Loading...</div>';
+            try {
+                var resp = await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({command: 'list_channels', arg: ''})
+                });
+                if (!resp.ok) {
+                    var errorText = await resp.text();
+                    throw new Error(errorText || 'admin command failed');
+                }
+                var data = await resp.json();
+                var result = data.result || '';
+                var chans = result.split('\n').filter(function(s) { return s.trim(); });
+                if (chans.length === 0) {
+                    el.innerHTML = '<div style="color:var(--text-dim);font-size:13px;">No channels configured on server.</div>';
+                    return;
+                }
+                var html = '';
+                for (var i = 0; i < chans.length; i++) {
+                    html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);">' +
+                        '<span style="font-size:13px;">' + escapeHtml(chans[i]) + '</span>' +
+                        '<button class="btn" style="padding:2px 8px;font-size:11px;color:var(--error);" onclick="removeChannel(\'' + escapeHtml(chans[i]).replace(/'/g, "\\'") + '\')">Remove</button>' +
+                        '</div>';
+                }
+                el.innerHTML = html;
+            } catch (e) {
+                el.innerHTML = '<div style="color:var(--error);font-size:13px;">Error: ' + escapeHtml(e.message) + '</div>';
+            }
+        }
+
+        async function addChannel() {
+            var input = document.getElementById('addChannelInput');
+            var username = input.value.trim().replace(/^@/, '');
+            var errEl = document.getElementById('channelManagerError');
+            errEl.style.display = 'none';
+            if (!username) return;
+            try {
+                var resp = await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({command: 'add_channel', arg: username})
+                });
+                if (!resp.ok) {
+                    errEl.textContent = await resp.text() || 'Failed to add channel';
+                    errEl.style.display = 'block';
+                    return;
+                }
+                await resp.json();
+                input.value = '';
+                addLogLine('Channel added: ' + username);
+                loadChannelManagerList();
+            } catch (e) {
+                errEl.textContent = e.message;
+                errEl.style.display = 'block';
+            }
+        }
+
+        async function removeChannel(username) {
+            var errEl = document.getElementById('channelManagerError');
+            errEl.style.display = 'none';
+            try {
+                var resp = await fetch('/api/admin', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({command: 'remove_channel', arg: username})
+                });
+                if (!resp.ok) {
+                    errEl.textContent = await resp.text() || 'Failed to remove channel';
+                    errEl.style.display = 'block';
+                    return;
+                }
+                await resp.json();
+                addLogLine('Channel removed: ' + username);
+                loadChannelManagerList();
+            } catch (e) {
+                errEl.textContent = e.message;
+                errEl.style.display = 'block';
+            }
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && document.activeElement === document.getElementById('sendInput')) {
+                e.preventDefault();
+                sendMessage();
+            }
+            if (e.key === 'Enter' && document.activeElement === document.getElementById('addChannelInput')) {
+                e.preventDefault();
+                addChannel();
+            }
+        });
 
         init();
     </script>

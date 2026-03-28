@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	cryptoRand "crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -93,14 +95,11 @@ func (f *Fetcher) SetQueryMode(mode protocol.QueryEncoding) {
 }
 
 // SetActiveResolvers updates the healthy resolver pool. Called by ResolverChecker.
-// If the new list is empty, the current pool is unchanged (to avoid blackout during a bad check).
 func (f *Fetcher) SetActiveResolvers(resolvers []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(resolvers) > 0 {
-		f.activeResolvers = make([]string, len(resolvers))
-		copy(f.activeResolvers, resolvers)
-	}
+	f.activeResolvers = make([]string, len(resolvers))
+	copy(f.activeResolvers, resolvers)
 }
 
 // SetResolvers replaces the full resolver list and resets the active pool.
@@ -189,7 +188,7 @@ func (f *Fetcher) runNoise(ctx context.Context) {
 			m := new(dns.Msg)
 			m.SetQuestion(dns.Fqdn(d), dns.TypeA)
 			m.RecursionDesired = true
-			c.Exchange(m, r) //nolint:errcheck — fire-and-forget noise query
+			_, _, _ = c.Exchange(m, r)
 		}(resolver, target)
 	}
 }
@@ -339,6 +338,10 @@ func (f *Fetcher) FetchMetadata(ctx context.Context) (*protocol.Metadata, error)
 // Cancelling ctx immediately aborts any queued or in-flight block fetches.
 // Each block is retried individually via FetchBlock before the channel fetch fails.
 func (f *Fetcher) FetchChannel(ctx context.Context, channelNum int, blockCount int) ([]protocol.Message, error) {
+	return f.fetchChannelBlocks(ctx, channelNum, blockCount, f.FetchBlock)
+}
+
+func (f *Fetcher) fetchChannelBlocks(ctx context.Context, channelNum int, blockCount int, fetchFn func(context.Context, uint16, uint16) ([]byte, error)) ([]protocol.Message, error) {
 	if blockCount <= 0 {
 		return nil, nil
 	}
@@ -368,7 +371,7 @@ func (f *Fetcher) FetchChannel(ctx context.Context, channelNum int, blockCount i
 			}
 			defer func() { <-sem }()
 
-			data, err := f.FetchBlock(ctx, uint16(channelNum), uint16(idx))
+			data, err := fetchFn(ctx, uint16(channelNum), uint16(idx))
 			results <- blockResult{idx: idx, data: data, err: err}
 		}(i)
 	}
@@ -400,7 +403,14 @@ func (f *Fetcher) FetchChannel(ctx context.Context, channelNum int, blockCount i
 		allData = append(allData, b...)
 	}
 
-	return protocol.ParseMessages(allData)
+	// Decompress if data has compression header
+	decompressed, err := protocol.DecompressMessages(allData)
+	if err != nil {
+		// Fall back to raw parse for backward compatibility with uncompressed data
+		return protocol.ParseMessages(allData)
+	}
+
+	return protocol.ParseMessages(decompressed)
 }
 
 func (f *Fetcher) queryResolver(ctx context.Context, resolver, qname string) ([]byte, error) {
@@ -408,17 +418,9 @@ func (f *Fetcher) queryResolver(ctx context.Context, resolver, qname string) ([]
 		resolver += ":53"
 	}
 
-	c := new(dns.Client)
-	c.Timeout = f.timeout
-
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(qname), dns.TypeTXT)
-	m.RecursionDesired = true
-	m.SetEdns0(4096, false) // advertise 4 KiB UDP buffer to avoid response truncation
-
-	resp, _, err := c.ExchangeContext(ctx, m, resolver)
+	resp, err := f.exchangeResolver(ctx, resolver, qname)
 	if err != nil {
-		return nil, fmt.Errorf("dns exchange with %s: %w", resolver, err)
+		return nil, err
 	}
 
 	if resp.Rcode != dns.RcodeSuccess {
@@ -433,4 +435,160 @@ func (f *Fetcher) queryResolver(ctx context.Context, resolver, qname string) ([]
 	}
 
 	return nil, fmt.Errorf("no TXT record in response from %s", resolver)
+}
+
+func (f *Fetcher) exchangeResolver(ctx context.Context, resolver, qname string) (*dns.Msg, error) {
+	resolverCtx, cancel := context.WithTimeout(ctx, f.timeout)
+	defer cancel()
+
+	c := &dns.Client{Timeout: f.timeout, Net: "udp"}
+
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(qname), dns.TypeTXT)
+	m.RecursionDesired = true
+	m.SetEdns0(1232, false)
+
+	resp, _, err := c.ExchangeContext(resolverCtx, m, resolver)
+	if err != nil {
+		return nil, fmt.Errorf("dns exchange with %s: %w", resolver, err)
+	}
+	return resp, nil
+}
+
+func (f *Fetcher) queryUpload(ctx context.Context, qname string) ([]byte, error) {
+	if err := f.rateWait(ctx); err != nil {
+		return nil, err
+	}
+
+	resolvers := f.Resolvers()
+	if len(resolvers) == 0 {
+		return nil, fmt.Errorf("no active resolvers")
+	}
+
+	shuffled := make([]string, len(resolvers))
+	copy(shuffled, resolvers)
+	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+
+	var lastErr error
+	for _, resolver := range shuffled {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		data, err := f.queryResolver(ctx, resolver, qname)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return data, nil
+	}
+	return nil, lastErr
+}
+
+func splitUploadPayload(data []byte) [][]byte {
+	chunks := make([][]byte, 0, (len(data)+protocol.MaxUpstreamBlockPayload-1)/protocol.MaxUpstreamBlockPayload)
+	for len(data) > 0 {
+		n := protocol.MaxUpstreamBlockPayload
+		if n > len(data) {
+			n = len(data)
+		}
+		chunk := make([]byte, n)
+		copy(chunk, data[:n])
+		chunks = append(chunks, chunk)
+		data = data[n:]
+	}
+	return chunks
+}
+
+func randomSessionID() (uint16, error) {
+	var buf [2]byte
+	for {
+		if _, err := cryptoRand.Read(buf[:]); err != nil {
+			return 0, err
+		}
+		sessionID := binary.BigEndian.Uint16(buf[:])
+		if sessionID != 0 {
+			return sessionID, nil
+		}
+	}
+}
+
+func (f *Fetcher) sendUpstream(ctx context.Context, kind protocol.UpstreamKind, targetChannel uint16, payload []byte) ([]byte, error) {
+	chunks := splitUploadPayload(payload)
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("empty payload")
+	}
+	if len(chunks) > protocol.MaxUpstreamBlocks {
+		return nil, fmt.Errorf("payload requires too many DNS blocks: %d > %d", len(chunks), protocol.MaxUpstreamBlocks)
+	}
+
+	sessionID, err := randomSessionID()
+	if err != nil {
+		return nil, fmt.Errorf("generate session id: %w", err)
+	}
+
+	initQname, err := protocol.EncodeUpstreamInitQuery(f.queryKey, protocol.UpstreamInit{
+		SessionID:     sessionID,
+		TotalBlocks:   uint8(len(chunks)),
+		Kind:          kind,
+		TargetChannel: uint8(targetChannel),
+	}, f.domain, f.queryMode)
+	if err != nil {
+		return nil, fmt.Errorf("encode upstream init: %w", err)
+	}
+	if f.debug {
+		f.log("[debug] upstream init kind=%d blocks=%d qname=%s", kind, len(chunks), initQname)
+	}
+
+	data, err := f.queryUpload(ctx, initQname)
+	if err != nil {
+		return nil, fmt.Errorf("start upstream session: %w", err)
+	}
+	if string(data) != "READY" {
+		return nil, fmt.Errorf("unexpected upstream init response: %s", string(data))
+	}
+
+	for idx, chunk := range chunks {
+		blockQname, err := protocol.EncodeUpstreamBlockQuery(f.queryKey, sessionID, uint8(idx), chunk, f.domain, f.queryMode)
+		if err != nil {
+			return nil, fmt.Errorf("encode upstream block %d: %w", idx, err)
+		}
+		if f.debug {
+			f.log("[debug] upstream block kind=%d idx=%d len=%d qname=%s", kind, idx, len(chunk), blockQname)
+		}
+
+		data, err = f.queryUpload(ctx, blockQname)
+		if err != nil {
+			return nil, fmt.Errorf("upload block %d: %w", idx, err)
+		}
+
+		if idx+1 < len(chunks) && string(data) != "CONTINUE" {
+			return nil, fmt.Errorf("unexpected upstream block response: %s", string(data))
+		}
+	}
+
+	return data, nil
+}
+
+// SendMessage sends a text message to the given channel via chunked upstream DNS queries.
+// Returns an error if the message is too long or sending fails.
+func (f *Fetcher) SendMessage(ctx context.Context, channelNum int, text string) error {
+	data, err := f.sendUpstream(ctx, protocol.UpstreamKindSend, uint16(channelNum), []byte(text))
+	if err != nil {
+		return fmt.Errorf("send failed: %w", err)
+	}
+	if string(data) != "OK" {
+		return fmt.Errorf("unexpected response: %s", string(data))
+	}
+	return nil
+}
+
+// SendAdminCommand sends an admin command to the server via chunked upstream DNS queries.
+// The payload is a single AdminCmd byte followed by the argument string.
+func (f *Fetcher) SendAdminCommand(ctx context.Context, cmd protocol.AdminCmd, arg string) (string, error) {
+	payload := append([]byte{byte(cmd)}, []byte(arg)...)
+	data, err := f.sendUpstream(ctx, protocol.UpstreamKindAdmin, 0, payload)
+	if err != nil {
+		return "", fmt.Errorf("admin command failed: %w", err)
+	}
+	return string(data), nil
 }

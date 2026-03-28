@@ -39,6 +39,10 @@ func findFreePort(t *testing.T, network string) int {
 }
 
 func startDNSServer(t *testing.T, domain, passphrase string, channels []string, messages map[int][]protocol.Message) (string, context.CancelFunc) {
+	return startDNSServerWithManage(t, domain, passphrase, false, channels, messages)
+}
+
+func startDNSServerWithManage(t *testing.T, domain, passphrase string, allowManage bool, channels []string, messages map[int][]protocol.Message) (string, context.CancelFunc) {
 	t.Helper()
 
 	qk, rk, err := protocol.DeriveKeys(passphrase)
@@ -54,7 +58,20 @@ func startDNSServer(t *testing.T, domain, passphrase string, channels []string, 
 	port := findFreePort(t, "udp")
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
-	dnsServer := server.NewDNSServer(addr, domain, feed, qk, rk, protocol.DefaultMaxPadding)
+	channelsFile := ""
+	if allowManage {
+		f, err := os.CreateTemp(t.TempDir(), "channels-*.txt")
+		if err != nil {
+			t.Fatalf("create temp channels file: %v", err)
+		}
+		for _, ch := range channels {
+			fmt.Fprintf(f, "@%s\n", ch)
+		}
+		f.Close()
+		channelsFile = f.Name()
+	}
+
+	dnsServer := server.NewDNSServer(addr, domain, feed, qk, rk, protocol.DefaultMaxPadding, nil, allowManage, channelsFile)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -266,7 +283,7 @@ func TestE2E_LargeMessages(t *testing.T) {
 func TestE2E_WebAPI_ConfigAndStatus(t *testing.T) {
 	dataDir := t.TempDir()
 	port := findFreePort(t, "tcp")
-	srv, err := web.New(dataDir, port)
+	srv, err := web.New(dataDir, port, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -331,7 +348,7 @@ func TestE2E_WebAPI_ConfigAndStatus(t *testing.T) {
 func TestE2E_WebAPI_InvalidConfig(t *testing.T) {
 	dataDir := t.TempDir()
 	port := findFreePort(t, "tcp")
-	srv, err := web.New(dataDir, port)
+	srv, err := web.New(dataDir, port, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -364,7 +381,7 @@ func TestE2E_WebAPI_InvalidConfig(t *testing.T) {
 func TestE2E_WebAPI_Channels(t *testing.T) {
 	dataDir := t.TempDir()
 	port := findFreePort(t, "tcp")
-	srv, err := web.New(dataDir, port)
+	srv, err := web.New(dataDir, port, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -387,7 +404,7 @@ func TestE2E_WebAPI_Channels(t *testing.T) {
 func TestE2E_WebAPI_Messages(t *testing.T) {
 	dataDir := t.TempDir()
 	port := findFreePort(t, "tcp")
-	srv, err := web.New(dataDir, port)
+	srv, err := web.New(dataDir, port, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -419,7 +436,7 @@ func TestE2E_WebAPI_Messages(t *testing.T) {
 func TestE2E_WebAPI_IndexPage(t *testing.T) {
 	dataDir := t.TempDir()
 	port := findFreePort(t, "tcp")
-	srv, err := web.New(dataDir, port)
+	srv, err := web.New(dataDir, port, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -445,7 +462,7 @@ func TestE2E_WebAPI_IndexPage(t *testing.T) {
 func TestE2E_WebAPI_NotFound(t *testing.T) {
 	dataDir := t.TempDir()
 	port := findFreePort(t, "tcp")
-	srv, err := web.New(dataDir, port)
+	srv, err := web.New(dataDir, port, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -467,7 +484,7 @@ func TestE2E_WebAPI_NotFound(t *testing.T) {
 func TestE2E_WebAPI_MethodNotAllowed(t *testing.T) {
 	dataDir := t.TempDir()
 	port := findFreePort(t, "tcp")
-	srv, err := web.New(dataDir, port)
+	srv, err := web.New(dataDir, port, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -500,7 +517,7 @@ func TestE2E_WebAPI_ConfigPersistence(t *testing.T) {
 	dataDir := t.TempDir()
 
 	port1 := findFreePort(t, "tcp")
-	srv1, err := web.New(dataDir, port1)
+	srv1, err := web.New(dataDir, port1, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -521,7 +538,7 @@ func TestE2E_WebAPI_ConfigPersistence(t *testing.T) {
 	}
 
 	port2 := findFreePort(t, "tcp")
-	srv2, err := web.New(dataDir, port2)
+	srv2, err := web.New(dataDir, port2, "")
 	if err != nil {
 		t.Fatalf("create second web server: %v", err)
 	}
@@ -566,7 +583,7 @@ func TestE2E_FullRoundTrip(t *testing.T) {
 
 	dataDir := t.TempDir()
 	port := findFreePort(t, "tcp")
-	srv, err := web.New(dataDir, port)
+	srv, err := web.New(dataDir, port, "")
 	if err != nil {
 		t.Fatalf("create web server: %v", err)
 	}
@@ -649,5 +666,128 @@ func TestE2E_FullRoundTrip(t *testing.T) {
 	}
 	if msgList2[0].Text != "Alert!" {
 		t.Errorf("msg[0].Text = %q, want %q", msgList2[0].Text, "Alert!")
+	}
+}
+
+// --- Auth E2E Tests ---
+
+func TestE2E_WebAPI_GlobalAuth(t *testing.T) {
+	dataDir := t.TempDir()
+	port := findFreePort(t, "tcp")
+	password := "webpass123"
+	srv, err := web.New(dataDir, port, password)
+	if err != nil {
+		t.Fatalf("create web server: %v", err)
+	}
+	go srv.Run()
+	time.Sleep(200 * time.Millisecond)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	// All endpoints should require auth when password is set.
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/"},
+		{"GET", "/api/status"},
+		{"GET", "/api/config"},
+		{"GET", "/api/channels"},
+		{"GET", "/api/messages/1"},
+		{"GET", "/api/events"},
+	}
+	for _, ep := range endpoints {
+		req, _ := http.NewRequest(ep.method, base+ep.path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", ep.method, ep.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 401 {
+			t.Errorf("%s %s without auth: expected 401, got %d", ep.method, ep.path, resp.StatusCode)
+		}
+	}
+
+	// With correct password, should succeed.
+	for _, ep := range endpoints[:5] { // skip /api/events (SSE stream)
+		req, _ := http.NewRequest(ep.method, base+ep.path, nil)
+		req.SetBasicAuth("", password)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", ep.method, ep.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == 401 {
+			t.Errorf("%s %s with correct auth: got 401", ep.method, ep.path)
+		}
+	}
+
+	// Wrong password should be rejected.
+	req, _ := http.NewRequest("GET", base+"/api/status", nil)
+	req.SetBasicAuth("", "wrongpass")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/status wrong pw: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Errorf("wrong password: expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestE2E_AdminAllowManage(t *testing.T) {
+	domain := "manage.example.com"
+	passphrase := "manage-test"
+	channels := []string{"moderated"}
+
+	msgs := map[int][]protocol.Message{
+		1: {{ID: 1, Timestamp: 1700000000, Text: "Existing"}},
+	}
+
+	resolver, cancel := startDNSServerWithManage(t, domain, passphrase, true, channels, msgs)
+	defer cancel()
+
+	fetcher, err := client.NewFetcher(domain, passphrase, []string{resolver})
+	if err != nil {
+		t.Fatalf("create fetcher: %v", err)
+	}
+
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer ctxCancel()
+
+	// Admin list_channels should succeed when allow-manage is enabled.
+	result, err := fetcher.SendAdminCommand(ctx, protocol.AdminCmdListChannels, "")
+	if err != nil {
+		t.Fatalf("expected admin command to succeed with allow-manage, got: %v", err)
+	}
+	if !strings.Contains(result, "moderated") {
+		t.Errorf("expected channel list to contain 'moderated', got: %q", result)
+	}
+}
+
+func TestE2E_AdminNoManage(t *testing.T) {
+	domain := "nomanage.example.com"
+	passphrase := "no-manage-test"
+	channels := []string{"public"}
+
+	msgs := map[int][]protocol.Message{
+		1: {{ID: 1, Timestamp: 1700000000, Text: "Public msg"}},
+	}
+
+	// Server has allow-manage disabled — admin commands should be refused.
+	resolver, cancel := startDNSServer(t, domain, passphrase, channels, msgs)
+	defer cancel()
+
+	fetcher, err := client.NewFetcher(domain, passphrase, []string{resolver})
+	if err != nil {
+		t.Fatalf("create fetcher: %v", err)
+	}
+
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer ctxCancel()
+
+	_, err = fetcher.SendAdminCommand(ctx, protocol.AdminCmdListChannels, "")
+	if err == nil {
+		t.Error("expected error when server has allow-manage disabled, got nil")
 	}
 }

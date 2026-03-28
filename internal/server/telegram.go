@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	cryptoRand "crypto/rand"
 	"fmt"
 	"log"
 	"os"
@@ -63,6 +64,19 @@ type TelegramReader struct {
 	mu       sync.RWMutex
 	cache    map[string]cachedMessages
 	cacheTTL time.Duration
+
+	// api is set once authenticated, used for sending messages.
+	apiMu sync.RWMutex
+	api   *tg.Client
+
+	refreshCh chan struct{} // signals Run() to re-fetch immediately
+}
+
+// resolvedPeer holds the resolved Telegram peer along with its chat type.
+type resolvedPeer struct {
+	peer     tg.InputPeerClass
+	chatType protocol.ChatType
+	canSend  bool
 }
 
 type cachedMessages struct {
@@ -80,12 +94,13 @@ func NewTelegramReader(cfg TelegramConfig, channelUsernames []string, feed *Feed
 		msgLimit = 15
 	}
 	return &TelegramReader{
-		cfg:      cfg,
-		channels: cleaned,
-		feed:     feed,
-		msgLimit: msgLimit,
-		cache:    make(map[string]cachedMessages),
-		cacheTTL: 15 * time.Minute,
+		cfg:       cfg,
+		channels:  cleaned,
+		feed:      feed,
+		msgLimit:  msgLimit,
+		cache:     make(map[string]cachedMessages),
+		cacheTTL:  10 * time.Minute,
+		refreshCh: make(chan struct{}, 1),
 	}
 }
 
@@ -107,6 +122,7 @@ func (tr *TelegramReader) Run(ctx context.Context) error {
 		}
 
 		log.Println("[telegram] authenticated successfully")
+		tr.feed.SetTelegramLoggedIn(true)
 
 		// Login-only mode: just authenticate and return
 		if tr.cfg.LoginOnly {
@@ -116,12 +132,18 @@ func (tr *TelegramReader) Run(ctx context.Context) error {
 
 		api := client.API()
 
+		tr.apiMu.Lock()
+		tr.api = api
+		tr.apiMu.Unlock()
+
 		// Initial fetch
 		tr.fetchAll(ctx, api)
 
 		// Periodic fetch loop
-		ticker := time.NewTicker(3 * time.Minute)
+		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
+
+		tr.feed.SetNextFetch(uint32(time.Now().Add(5 * time.Minute).Unix()))
 
 		for {
 			select {
@@ -129,9 +151,38 @@ func (tr *TelegramReader) Run(ctx context.Context) error {
 				return ctx.Err()
 			case <-ticker.C:
 				tr.fetchAll(ctx, api)
+				tr.feed.SetNextFetch(uint32(time.Now().Add(5 * time.Minute).Unix()))
+			case <-tr.refreshCh:
+				// Invalidate cache so fetchAll re-fetches everything.
+				tr.mu.Lock()
+				tr.cache = make(map[string]cachedMessages)
+				tr.mu.Unlock()
+				tr.fetchAll(ctx, api)
+				ticker.Reset(5 * time.Minute)
+				tr.feed.SetNextFetch(uint32(time.Now().Add(5 * time.Minute).Unix()))
 			}
 		}
 	})
+}
+
+// RequestRefresh signals the fetch loop to re-fetch immediately.
+func (tr *TelegramReader) RequestRefresh() {
+	select {
+	case tr.refreshCh <- struct{}{}:
+	default: // already pending
+	}
+}
+
+// UpdateChannels replaces the channel list and updates the Feed accordingly.
+func (tr *TelegramReader) UpdateChannels(channels []string) {
+	cleaned := make([]string, len(channels))
+	for i, u := range channels {
+		cleaned[i] = strings.TrimPrefix(strings.TrimSpace(u), "@")
+	}
+	tr.mu.Lock()
+	tr.channels = cleaned
+	tr.mu.Unlock()
+	tr.feed.SetChannels(cleaned)
 }
 
 func (tr *TelegramReader) authenticate(ctx context.Context, client *telegram.Client) error {
@@ -173,7 +224,24 @@ func (tr *TelegramReader) fetchAll(ctx context.Context, api *tg.Client) {
 			continue
 		}
 
-		msgs, err := tr.fetchChannel(ctx, api, username)
+		// Resolve peer to get chat type info
+		rp, err := tr.resolvePeer(ctx, api, username)
+		if err != nil {
+			log.Printf("[telegram] fetch %s: %v", username, err)
+			continue
+		}
+
+		hist, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+			Peer:  rp.peer,
+			Limit: tr.msgLimit,
+		})
+		if err != nil {
+			log.Printf("[telegram] fetch %s: get history: %v", username, err)
+			continue
+		}
+
+		userNames := buildUserMap(hist)
+		msgs, err := tr.extractMessages(hist, rp.chatType, userNames)
 		if err != nil {
 			log.Printf("[telegram] fetch %s: %v", username, err)
 			continue
@@ -184,13 +252,16 @@ func (tr *TelegramReader) fetchAll(ctx context.Context, api *tg.Client) {
 		tr.cache[username] = cachedMessages{msgs: msgs, fetched: time.Now()}
 		tr.mu.Unlock()
 
-		// Update feed
+		// Update feed with messages and chat type info
 		tr.feed.UpdateChannel(chNum, msgs)
-		log.Printf("[telegram] updated %s: %d messages", username, len(msgs))
+		tr.feed.SetChatInfo(chNum, rp.chatType, rp.canSend)
+		log.Printf("[telegram] updated %s: %d messages (type=%d, canSend=%v)", username, len(msgs), rp.chatType, rp.canSend)
 	}
 }
 
-func (tr *TelegramReader) fetchChannel(ctx context.Context, api *tg.Client, username string) ([]protocol.Message, error) {
+// resolvePeer resolves a Telegram username to an InputPeer, handling channels,
+// bots, and private chats.
+func (tr *TelegramReader) resolvePeer(ctx context.Context, api *tg.Client, username string) (*resolvedPeer, error) {
 	resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{
 		Username: username,
 	})
@@ -198,34 +269,86 @@ func (tr *TelegramReader) fetchChannel(ctx context.Context, api *tg.Client, user
 		return nil, fmt.Errorf("resolve %s: %w", username, err)
 	}
 
-	var channel *tg.Channel
+	// Check Chats first (channels, supergroups)
 	for _, chat := range resolved.Chats {
 		if ch, ok := chat.(*tg.Channel); ok {
-			channel = ch
-			break
+			canSend := !ch.Broadcast || ch.Creator || ch.AdminRights.PostMessages
+			return &resolvedPeer{
+				peer: &tg.InputPeerChannel{
+					ChannelID:  ch.ID,
+					AccessHash: ch.AccessHash,
+				},
+				chatType: protocol.ChatTypeChannel,
+				canSend:  canSend,
+			}, nil
 		}
 	}
-	if channel == nil {
-		return nil, fmt.Errorf("channel %s not found in resolved chats", username)
+
+	// Check Users (bots, private chats)
+	for _, u := range resolved.Users {
+		if user, ok := u.(*tg.User); ok {
+			return &resolvedPeer{
+				peer: &tg.InputPeerUser{
+					UserID:     user.ID,
+					AccessHash: user.AccessHash,
+				},
+				chatType: protocol.ChatTypePrivate,
+				canSend:  true,
+			}, nil
+		}
 	}
 
-	peer := &tg.InputPeerChannel{
-		ChannelID:  channel.ID,
-		AccessHash: channel.AccessHash,
+	return nil, fmt.Errorf("%s not found in resolved chats or users", username)
+}
+
+func (tr *TelegramReader) fetchChannel(ctx context.Context, api *tg.Client, username string) ([]protocol.Message, error) {
+	rp, err := tr.resolvePeer(ctx, api, username)
+	if err != nil {
+		return nil, err
 	}
 
 	hist, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-		Peer:  peer,
+		Peer:  rp.peer,
 		Limit: tr.msgLimit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get history %s: %w", username, err)
 	}
 
-	return tr.extractMessages(hist)
+	userNames := buildUserMap(hist)
+	return tr.extractMessages(hist, protocol.ChatTypeChannel, userNames)
 }
 
-func (tr *TelegramReader) extractMessages(hist tg.MessagesMessagesClass) ([]protocol.Message, error) {
+// buildUserMap extracts a user ID → display name map from a history response.
+func buildUserMap(hist tg.MessagesMessagesClass) map[int64]string {
+	var users []tg.UserClass
+	switch h := hist.(type) {
+	case *tg.MessagesMessages:
+		users = h.Users
+	case *tg.MessagesMessagesSlice:
+		users = h.Users
+	case *tg.MessagesChannelMessages:
+		users = h.Users
+	}
+	m := make(map[int64]string, len(users))
+	for _, u := range users {
+		if user, ok := u.(*tg.User); ok {
+			name := user.FirstName
+			if user.LastName != "" {
+				name += " " + user.LastName
+			}
+			if name == "" {
+				name = user.Username
+			}
+			if name != "" {
+				m[user.ID] = name
+			}
+		}
+	}
+	return m
+}
+
+func (tr *TelegramReader) extractMessages(hist tg.MessagesMessagesClass, chatType protocol.ChatType, userNames map[int64]string) ([]protocol.Message, error) {
 	var tgMsgs []tg.MessageClass
 
 	switch h := hist.(type) {
@@ -249,6 +372,17 @@ func (tr *TelegramReader) extractMessages(hist tg.MessagesMessagesClass) ([]prot
 		text := tr.extractText(msg)
 		if text == "" {
 			continue
+		}
+
+		// For private chats, prefix with the sender's name.
+		if chatType == protocol.ChatTypePrivate {
+			if fromID, ok := msg.GetFromID(); ok {
+				if pu, ok := fromID.(*tg.PeerUser); ok {
+					if name, ok := userNames[pu.UserID]; ok {
+						text = name + ": " + text
+					}
+				}
+			}
 		}
 
 		msgs = append(msgs, protocol.Message{
@@ -310,4 +444,43 @@ func (tr *TelegramReader) classifyDocument(media *tg.MessageMediaDocument) strin
 	}
 
 	return protocol.MediaFile
+}
+
+// SendMessage sends a text message to the given channel/chat (1-indexed).
+func (tr *TelegramReader) SendMessage(ctx context.Context, channelNum int, text string) error {
+	if channelNum < 1 || channelNum > len(tr.channels) {
+		return fmt.Errorf("invalid channel number: %d", channelNum)
+	}
+
+	tr.apiMu.RLock()
+	api := tr.api
+	tr.apiMu.RUnlock()
+	if api == nil {
+		return fmt.Errorf("not authenticated")
+	}
+
+	username := tr.channels[channelNum-1]
+	rp, err := tr.resolvePeer(ctx, api, username)
+	if err != nil {
+		return fmt.Errorf("send resolve: %w", err)
+	}
+
+	var ridBuf [8]byte
+	if _, ridErr := cryptoRand.Read(ridBuf[:]); ridErr != nil {
+		return fmt.Errorf("generate random id: %w", ridErr)
+	}
+	randomID := int64(ridBuf[0]) | int64(ridBuf[1])<<8 | int64(ridBuf[2])<<16 | int64(ridBuf[3])<<24 |
+		int64(ridBuf[4])<<32 | int64(ridBuf[5])<<40 | int64(ridBuf[6])<<48 | int64(ridBuf[7])<<56
+
+	_, err = api.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:     rp.peer,
+		Message:  text,
+		RandomID: randomID,
+	})
+	if err != nil {
+		return fmt.Errorf("send to %s: %w", username, err)
+	}
+
+	log.Printf("[telegram] sent message to %s (%d chars)", username, len(text))
+	return nil
 }

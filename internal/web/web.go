@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -39,15 +40,20 @@ type Config struct {
 
 // Server is the web UI server for thefeed client.
 type Server struct {
-	dataDir string
-	port    int
+	dataDir  string
+	port     int
+	password string // admin password; empty means no auth
 
-	mu       sync.RWMutex
-	config   *Config
-	fetcher  *client.Fetcher
-	cache    *client.Cache
-	channels []protocol.ChannelInfo
-	messages map[int][]protocol.Message
+	mu               sync.RWMutex
+	config           *Config
+	fetcher          *client.Fetcher
+	cache            *client.Cache
+	channels         []protocol.ChannelInfo
+	messages         map[int][]protocol.Message
+	telegramLoggedIn bool
+	nextFetch        uint32
+	lastMsgIDs       map[int]uint32 // last seen message IDs per channel
+	lastHashes       map[int]uint32 // last seen content hashes per channel
 
 	// fetcherCtx/fetcherCancel control the lifetime of the active fetcher's
 	// background goroutines (rate limiter, noise, resolver checker).
@@ -56,8 +62,10 @@ type Server struct {
 	fetcherCancel context.CancelFunc
 
 	// refreshMu / refreshCancel allow a new refresh to cancel an in-progress one.
-	refreshMu     sync.Mutex
-	refreshCancel context.CancelFunc
+	// channelFetching tracks which channels are currently being fetched.
+	refreshMu       sync.Mutex
+	refreshCancel   context.CancelFunc
+	channelFetching map[int]bool // prevents duplicate fetches for same channel
 
 	logMu    sync.RWMutex
 	logLines []string
@@ -69,16 +77,20 @@ type Server struct {
 }
 
 // New creates a new web server.
-func New(dataDir string, port int) (*Server, error) {
+func New(dataDir string, port int, password string) (*Server, error) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
 	s := &Server{
-		dataDir:  dataDir,
-		port:     port,
-		messages: make(map[int][]protocol.Message),
-		clients:  make(map[chan string]struct{}),
+		dataDir:         dataDir,
+		port:            port,
+		password:        password,
+		messages:        make(map[int][]protocol.Message),
+		clients:         make(map[chan string]struct{}),
+		channelFetching: make(map[int]bool),
+		lastMsgIDs:      make(map[int]uint32),
+		lastHashes:      make(map[int]uint32),
 	}
 
 	cfg, err := s.loadConfig()
@@ -104,6 +116,8 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/channels", s.handleChannels)
 	mux.HandleFunc("/api/messages/", s.handleMessages)
 	mux.HandleFunc("/api/refresh", s.handleRefresh)
+	mux.HandleFunc("/api/send", s.handleSend)
+	mux.HandleFunc("/api/admin", s.handleAdmin)
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/", s.handleIndex)
 
@@ -115,7 +129,28 @@ func (s *Server) Run() error {
 		go s.refreshMetadataOnly()
 	}
 
-	return http.ListenAndServe(addr, mux)
+	var handler http.Handler = mux
+	if s.password != "" {
+		pw := s.password
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, pass, ok := r.BasicAuth()
+			if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(pw)) != 1 {
+				w.Header().Set("WWW-Authenticate", `Basic realm="thefeed"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		})
+	}
+
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+	return srv.ListenAndServe()
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -137,16 +172,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.RUnlock()
 
 	status := map[string]any{
-		"configured": s.config != nil,
-		"version":    version.Version,
+		"configured":  s.config != nil,
+		"version":     version.Version,
+		"hasPassword": s.password != "",
 	}
 	if s.config != nil {
 		status["domain"] = s.config.Domain
 		status["channels"] = s.channels
+		status["telegramLoggedIn"] = s.telegramLoggedIn
+		status["nextFetch"] = s.nextFetch
 	}
 	writeJSON(w, status)
 }
 
+// handleConfig handles GET (read) and POST (write) of client configuration.
+// POST is authenticated when a global password is set (via the middleware).
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -241,6 +281,116 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		go s.refreshMetadataOnly()
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	var req struct {
+		Channel int    `json:"channel"`
+		Text    string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
+	if req.Channel < 1 || req.Text == "" {
+		http.Error(w, "channel and text are required", 400)
+		return
+	}
+	if len(req.Text) > 4000 {
+		http.Error(w, "message too long (max 4000 chars)", 400)
+		return
+	}
+
+	s.mu.RLock()
+	fetcher := s.fetcher
+	basectx := s.fetcherCtx
+	s.mu.RUnlock()
+
+	if fetcher == nil || basectx == nil {
+		http.Error(w, "not configured", 400)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(basectx, 5*time.Minute)
+	defer cancel()
+
+	s.addLog(fmt.Sprintf("Sending message to channel %d (%d chars)...", req.Channel, len(req.Text)))
+
+	if err := fetcher.SendMessage(ctx, req.Channel, req.Text); err != nil {
+		log.Printf("[web] send error ch=%d: %v", req.Channel, err)
+		s.addLog("Error: failed to send message")
+		http.Error(w, "failed to send message", 500)
+		return
+	}
+
+	s.addLog("Message sent successfully")
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	var req struct {
+		Command string `json:"command"`
+		Arg     string `json:"arg"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", 400)
+		return
+	}
+	if req.Command == "" {
+		http.Error(w, "command is required", 400)
+		return
+	}
+
+	s.mu.RLock()
+	fetcher := s.fetcher
+	basectx := s.fetcherCtx
+	s.mu.RUnlock()
+
+	if fetcher == nil || basectx == nil {
+		http.Error(w, "not configured", 400)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(basectx, 5*time.Minute)
+	defer cancel()
+
+	s.addLog(fmt.Sprintf("Admin command: %s %s", req.Command, req.Arg))
+
+	var cmd protocol.AdminCmd
+	switch req.Command {
+	case "add_channel":
+		cmd = protocol.AdminCmdAddChannel
+	case "remove_channel":
+		cmd = protocol.AdminCmdRemoveChannel
+	case "list_channels":
+		cmd = protocol.AdminCmdListChannels
+	case "refresh":
+		cmd = protocol.AdminCmdRefresh
+	default:
+		http.Error(w, "unknown command", 400)
+		return
+	}
+
+	result, err := fetcher.SendAdminCommand(ctx, cmd, req.Arg)
+	if err != nil {
+		log.Printf("[web] admin error: %v", err)
+		s.addLog(fmt.Sprintf("Admin error: %v", err))
+		http.Error(w, "admin command failed", 500)
+		return
+	}
+
+	s.addLog(fmt.Sprintf("Admin result: %s", result))
+	writeJSON(w, map[string]any{"ok": true, "result": result})
 }
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
@@ -338,8 +488,6 @@ func (s *Server) initFetcher() error {
 
 	if cfg.QueryMode == "double" {
 		fetcher.SetQueryMode(protocol.QueryMultiLabel)
-	} else if cfg.QueryMode == "plain" {
-		fetcher.SetQueryMode(protocol.QueryPlainLabel)
 	}
 	fetcher.SetDebug(cfg.Debug)
 	if cfg.RateLimit > 0 {
@@ -369,6 +517,7 @@ func (s *Server) initFetcher() error {
 	checker.SetLogFunc(func(msg string) {
 		s.addLog(msg)
 	})
+	checker.CheckNow()
 	checker.Start(ctx)
 
 	s.fetcher = fetcher
@@ -412,12 +561,20 @@ func (s *Server) refreshMetadataOnly() {
 			s.addLog("Refresh cancelled")
 			return
 		}
-		s.addLog(fmt.Sprintf("Error: %v", err))
+		// Detect invalid passphrase from crypto errors
+		errStr := err.Error()
+		if strings.Contains(errStr, "integrity check failed") || strings.Contains(errStr, "message authentication failed") || strings.Contains(errStr, "cipher") {
+			s.addLog("Error: Invalid passphrase — check your encryption key in Settings")
+		} else {
+			s.addLog(fmt.Sprintf("Error: %v", err))
+		}
 		return
 	}
 
 	s.mu.Lock()
 	s.channels = meta.Channels
+	s.telegramLoggedIn = meta.TelegramLoggedIn
+	s.nextFetch = meta.NextFetch
 	s.mu.Unlock()
 
 	if cache != nil {
@@ -428,19 +585,26 @@ func (s *Server) refreshMetadataOnly() {
 }
 
 func (s *Server) refreshChannel(channelNum int) {
+	// Prevent duplicate fetches for the same channel
 	s.refreshMu.Lock()
+	if s.channelFetching[channelNum] {
+		s.refreshMu.Unlock()
+		s.addLog(fmt.Sprintf("Channel %d is already being fetched, skipping", channelNum))
+		return
+	}
 	if s.refreshCancel != nil {
 		s.refreshCancel()
 	}
+	s.channelFetching[channelNum] = true
 
 	s.mu.RLock()
 	basectx := s.fetcherCtx
 	fetcher := s.fetcher
 	cache := s.cache
-	channels := s.channels
 	s.mu.RUnlock()
 
 	if fetcher == nil || basectx == nil {
+		delete(s.channelFetching, channelNum)
 		s.refreshMu.Unlock()
 		return
 	}
@@ -452,6 +616,7 @@ func (s *Server) refreshChannel(channelNum int) {
 		cancel()
 		s.refreshMu.Lock()
 		s.refreshCancel = nil
+		delete(s.channelFetching, channelNum)
 		s.refreshMu.Unlock()
 	}()
 
@@ -461,12 +626,19 @@ func (s *Server) refreshChannel(channelNum int) {
 			s.addLog("Refresh cancelled")
 			return
 		}
-		s.addLog(fmt.Sprintf("Error: %v", err))
+		errStr := err.Error()
+		if strings.Contains(errStr, "integrity check failed") || strings.Contains(errStr, "message authentication failed") || strings.Contains(errStr, "cipher") {
+			s.addLog("Error: Invalid passphrase — check your encryption key in Settings")
+		} else {
+			s.addLog(fmt.Sprintf("Error: %v", err))
+		}
 		return
 	}
 
 	s.mu.Lock()
 	s.channels = meta.Channels
+	s.telegramLoggedIn = meta.TelegramLoggedIn
+	s.nextFetch = meta.NextFetch
 	s.mu.Unlock()
 
 	if cache != nil {
@@ -474,24 +646,39 @@ func (s *Server) refreshChannel(channelNum int) {
 	}
 	s.broadcast("event: update\ndata: \"channels\"\n\n")
 
-	channels = meta.Channels
+	channels := meta.Channels
 	if channelNum < 1 || channelNum > len(channels) {
 		s.addLog(fmt.Sprintf("Warning: channel %d is not available", channelNum))
 		return
 	}
 
 	ch := channels[channelNum-1]
+
+	// Skip refresh if the last message ID and content hash haven't changed
+	s.mu.RLock()
+	prevID := s.lastMsgIDs[channelNum]
+	prevHash := s.lastHashes[channelNum]
+	s.mu.RUnlock()
+	if prevID > 0 && ch.LastMsgID == prevID && ch.ContentHash == prevHash {
+		s.addLog(fmt.Sprintf("Channel %s: no changes (last ID: %d)", ch.Name, prevID))
+		s.broadcast("event: update\ndata: \"messages\"\n\n")
+		return
+	}
+
 	blockCount := int(ch.Blocks)
 	if blockCount <= 0 {
 		s.mu.Lock()
 		s.messages[channelNum] = nil
+		s.lastMsgIDs[channelNum] = ch.LastMsgID
+		s.lastHashes[channelNum] = ch.ContentHash
 		s.mu.Unlock()
 		s.addLog(fmt.Sprintf("Updated %s: 0 messages", ch.Name))
 		s.broadcast("event: update\ndata: \"messages\"\n\n")
 		return
 	}
 
-	msgs, err := fetcher.FetchChannel(ctx, channelNum, blockCount)
+	var msgs []protocol.Message
+	msgs, err = fetcher.FetchChannel(ctx, channelNum, blockCount)
 	if err != nil {
 		if ctx.Err() != nil {
 			s.addLog("Refresh cancelled")
@@ -503,6 +690,8 @@ func (s *Server) refreshChannel(channelNum int) {
 
 	s.mu.Lock()
 	s.messages[channelNum] = msgs
+	s.lastMsgIDs[channelNum] = ch.LastMsgID
+	s.lastHashes[channelNum] = ch.ContentHash
 	s.mu.Unlock()
 
 	if cache != nil {

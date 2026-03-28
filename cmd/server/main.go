@@ -25,13 +25,15 @@ func main() {
 	domain := flag.String("domain", "", "DNS domain (e.g., t.example.com)")
 	key := flag.String("key", "", "Encryption passphrase")
 	channelsFile := flag.String("channels", "", "Path to channels file (default: {data-dir}/channels.txt)")
-	apiID := flag.String("api-id", "", "Telegram API ID")
-	apiHash := flag.String("api-hash", "", "Telegram API Hash")
-	phone := flag.String("phone", "", "Telegram phone number")
+	apiID := flag.String("api-id", "", "Telegram API ID (optional if --no-telegram)")
+	apiHash := flag.String("api-hash", "", "Telegram API Hash (optional if --no-telegram)")
+	phone := flag.String("phone", "", "Telegram phone number (optional if --no-telegram)")
 	loginOnly := flag.Bool("login-only", false, "Authenticate to Telegram, save session, and exit")
+	noTelegram := flag.Bool("no-telegram", false, "Fetch public channels without Telegram login")
 	sessionPath := flag.String("session", "", "Path to Telegram session file (default: {data-dir}/session.json)")
 	maxPadding := flag.Int("padding", 32, "Max random padding bytes in DNS responses (anti-DPI, 0=disabled)")
 	msgLimit := flag.Int("msg-limit", 15, "Maximum messages to fetch per Telegram channel")
+	allowManage := flag.Bool("allow-manage", false, "Allow remote channel management and sending via DNS")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	flag.Parse()
 
@@ -59,6 +61,9 @@ func main() {
 	if *key == "" {
 		*key = os.Getenv("THEFEED_KEY")
 	}
+	if !*allowManage && os.Getenv("THEFEED_ALLOW_MANAGE") == "1" {
+		*allowManage = true
+	}
 	if *apiID == "" {
 		*apiID = os.Getenv("TELEGRAM_API_ID")
 	}
@@ -74,20 +79,29 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	if *apiID == "" || *apiHash == "" || *phone == "" {
-		fmt.Fprintln(os.Stderr, "Error: --api-id, --api-hash, and --phone are required")
-		flag.Usage()
-		os.Exit(1)
+
+	// Telegram credentials are required unless --no-telegram
+	needTelegram := !*noTelegram
+	if needTelegram {
+		if *apiID == "" || *apiHash == "" || *phone == "" {
+			fmt.Fprintln(os.Stderr, "Error: --api-id, --api-hash, and --phone are required (use --no-telegram to skip)")
+			flag.Usage()
+			os.Exit(1)
+		}
 	}
 
-	id, err := strconv.Atoi(*apiID)
-	if err != nil {
-		log.Fatalf("Invalid API ID: %v", err)
+	var id int
+	if *apiID != "" {
+		var err error
+		id, err = strconv.Atoi(*apiID)
+		if err != nil {
+			log.Fatalf("Invalid API ID: %v", err)
+		}
 	}
 
-	// Interactive 2FA password prompt — only when --login-only or no existing session
+	// Interactive 2FA password prompt — only when Telegram is enabled
 	password := os.Getenv("TELEGRAM_PASSWORD")
-	if password == "" {
+	if password == "" && needTelegram {
 		hasSession := false
 		if info, statErr := os.Stat(*sessionPath); statErr == nil && info.Size() > 0 {
 			hasSession = true
@@ -109,6 +123,8 @@ func main() {
 		ChannelsFile: *channelsFile,
 		MaxPadding:   *maxPadding,
 		MsgLimit:     *msgLimit,
+		NoTelegram:   *noTelegram,
+		AllowManage:  *allowManage,
 		Telegram: server.TelegramConfig{
 			APIID:       id,
 			APIHash:     *apiHash,

@@ -11,21 +11,29 @@ import (
 
 // Feed manages the block data for all channels.
 type Feed struct {
-	mu         sync.RWMutex
-	marker     [protocol.MarkerSize]byte
-	channels   []string
-	blocks     map[int][][]byte
-	lastIDs    map[int]uint32
-	metaBlocks [][]byte // cached metadata split into blocks
-	updated    time.Time
+	mu               sync.RWMutex
+	marker           [protocol.MarkerSize]byte
+	channels         []string
+	blocks           map[int][][]byte
+	lastIDs          map[int]uint32
+	contentHashes    map[int]uint32
+	chatTypes        map[int]protocol.ChatType
+	canSend          map[int]bool
+	metaBlocks       [][]byte // metadata for all channels
+	updated          time.Time
+	telegramLoggedIn bool
+	nextFetch        uint32
 }
 
 // NewFeed creates a new Feed with the given channel names.
 func NewFeed(channels []string) *Feed {
 	f := &Feed{
-		channels: channels,
-		blocks:   make(map[int][][]byte),
-		lastIDs:  make(map[int]uint32),
+		channels:      channels,
+		blocks:        make(map[int][][]byte),
+		lastIDs:       make(map[int]uint32),
+		contentHashes: make(map[int]uint32),
+		chatTypes:     make(map[int]protocol.ChatType),
+		canSend:       make(map[int]bool),
 	}
 	f.rotateMarker()
 	f.rebuildMetaBlocks()
@@ -39,18 +47,21 @@ func (f *Feed) rotateMarker() {
 // UpdateChannel replaces the messages for a channel, re-serializing into blocks.
 func (f *Feed) UpdateChannel(channelNum int, msgs []protocol.Message) {
 	data := protocol.SerializeMessages(msgs)
-	blocks := protocol.SplitIntoBlocks(data)
+	compressed := protocol.CompressMessages(data)
+	blocks := protocol.SplitIntoBlocks(compressed)
 
 	var lastID uint32
 	if len(msgs) > 0 {
 		lastID = msgs[0].ID
 	}
+	contentHash := protocol.ContentHashOf(msgs)
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.blocks[channelNum] = blocks
 	f.lastIDs[channelNum] = lastID
+	f.contentHashes[channelNum] = contentHash
 	f.updated = time.Now()
 	f.rotateMarker()
 	f.rebuildMetaBlocks()
@@ -76,21 +87,25 @@ func (f *Feed) GetBlock(channel, block int) ([]byte, error) {
 }
 
 func (f *Feed) getMetadataBlock(block int) ([]byte, error) {
-	if len(f.metaBlocks) == 0 {
+	blocks := f.metaBlocks
+	if len(blocks) == 0 {
 		f.rebuildMetaBlocks()
+		blocks = f.metaBlocks
 	}
-	if block < 0 || block >= len(f.metaBlocks) {
-		return nil, fmt.Errorf("metadata block %d out of range (%d blocks)", block, len(f.metaBlocks))
+	if block < 0 || block >= len(blocks) {
+		return nil, fmt.Errorf("metadata block %d out of range (%d blocks)", block, len(blocks))
 	}
-	return f.metaBlocks[block], nil
+	return blocks[block], nil
 }
 
 // rebuildMetaBlocks re-serializes the metadata and splits it into blocks.
 // Must be called with f.mu held.
 func (f *Feed) rebuildMetaBlocks() {
-	meta := &protocol.Metadata{
-		Marker:    f.marker,
-		Timestamp: uint32(time.Now().Unix()),
+	meta := protocol.Metadata{
+		Marker:           f.marker,
+		Timestamp:        uint32(time.Now().Unix()),
+		NextFetch:        f.nextFetch,
+		TelegramLoggedIn: f.telegramLoggedIn,
 	}
 
 	for i, name := range f.channels {
@@ -101,14 +116,16 @@ func (f *Feed) rebuildMetaBlocks() {
 			blockCount = uint16(len(blocks))
 		}
 		meta.Channels = append(meta.Channels, protocol.ChannelInfo{
-			Name:      name,
-			Blocks:    blockCount,
-			LastMsgID: f.lastIDs[chNum],
+			Name:        name,
+			Blocks:      blockCount,
+			LastMsgID:   f.lastIDs[chNum],
+			ContentHash: f.contentHashes[chNum],
+			ChatType:    f.chatTypes[chNum],
+			CanSend:     f.canSend[chNum],
 		})
 	}
 
-	data := protocol.SerializeMetadata(meta)
-	f.metaBlocks = protocol.SplitIntoBlocks(data)
+	f.metaBlocks = protocol.SplitIntoBlocks(protocol.SerializeMetadata(&meta))
 }
 
 // ChannelNames returns the configured channel names.
@@ -118,4 +135,44 @@ func (f *Feed) ChannelNames() []string {
 	result := make([]string, len(f.channels))
 	copy(result, f.channels)
 	return result
+}
+
+// SetTelegramLoggedIn sets the flag indicating whether the server has a Telegram session.
+func (f *Feed) SetTelegramLoggedIn(loggedIn bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.telegramLoggedIn = loggedIn
+	f.rebuildMetaBlocks()
+}
+
+// SetNextFetch sets the unix timestamp of the next server-side fetch.
+func (f *Feed) SetNextFetch(ts uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextFetch = ts
+	f.rebuildMetaBlocks()
+}
+
+// SetChatInfo stores the chat type and send capability for a channel.
+func (f *Feed) SetChatInfo(channelNum int, chatType protocol.ChatType, canSend bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.chatTypes[channelNum] = chatType
+	f.canSend[channelNum] = canSend
+	f.rebuildMetaBlocks()
+}
+
+// IsPrivateChannel returns true if the channel has chatType == ChatTypePrivate.
+func (f *Feed) IsPrivateChannel(channelNum int) bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.chatTypes[channelNum] == protocol.ChatTypePrivate
+}
+
+// SetChannels replaces the channel list and rebuilds metadata.
+func (f *Feed) SetChannels(channels []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.channels = channels
+	f.rebuildMetaBlocks()
 }

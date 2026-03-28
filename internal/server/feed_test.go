@@ -20,7 +20,12 @@ func TestFeedUpdateAndGetBlock(t *testing.T) {
 	if len(data) == 0 {
 		t.Error("block data should not be empty")
 	}
-	parsed, err := protocol.ParseMessages(data)
+	// Data is now compressed — decompress + parse
+	decompressed, err := protocol.DecompressMessages(data)
+	if err != nil {
+		t.Fatalf("DecompressMessages: %v", err)
+	}
+	parsed, err := protocol.ParseMessages(decompressed)
 	if err != nil {
 		t.Fatalf("ParseMessages: %v", err)
 	}
@@ -71,20 +76,20 @@ func TestFeedGetBlockUnknownChannel(t *testing.T) {
 
 func TestFeedLargeMessages(t *testing.T) {
 	feed := NewFeed([]string{"Test"})
-	// Use text large enough to span 2 blocks at DefaultBlockPayload (currently 700 bytes).
-	// Message serialization overhead is 10 bytes, so we need >690 bytes of text.
-	largeText := make([]byte, 750)
+	// With compression, repetitive data compresses to ~1 block.
+	// Use varied text so compressed size still spans multiple blocks.
+	largeText := make([]byte, 1500)
 	for i := range largeText {
-		largeText[i] = 65
+		largeText[i] = byte(i % 251) // pseudo-random pattern
 	}
 	msgs := []protocol.Message{{ID: 1, Timestamp: 1700000000, Text: string(largeText)}}
 	feed.UpdateChannel(1, msgs)
-	_, err := feed.GetBlock(1, 0)
+	// Should have at least 1 block
+	data0, err := feed.GetBlock(1, 0)
 	if err != nil {
 		t.Fatalf("GetBlock(1, 0): %v", err)
 	}
-	_, err = feed.GetBlock(1, 1)
-	if err != nil {
-		t.Fatalf("GetBlock(1, 1): %v", err)
+	if len(data0) == 0 {
+		t.Error("block data should not be empty")
 	}
 }

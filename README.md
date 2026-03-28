@@ -2,6 +2,8 @@
 
 DNS-based feed reader for Telegram channels. Designed for environments where only DNS queries work.
 
+[English](README.md) | [فارسی](README-FA.md)
+
 ## How It Works
 
 ```
@@ -16,37 +18,34 @@ DNS-based feed reader for Telegram channels. Designed for environments where onl
 - Serves feed data as encrypted DNS TXT responses
 - Random padding on responses to vary size (anti-DPI)
 - Session persistence — login once, run forever
+- No-Telegram mode (`--no-telegram`) — reads public channels without needing Telegram credentials
 - All data stored in a single directory
 
 **Client** (runs inside censored network):
 - Browser-based web UI with RTL/Farsi support (VazirMatn font)
 - Configure via the web UI — no CLI flags needed
 - Sends encrypted DNS TXT queries via available resolvers
-- Single-label base32 encoding (stealthier) or double-label hex
-- Rate limiting to respect resolver limits
+- Send messages to channels and private chats (requires server `--allow-manage`)
+- Channel management (add/remove channels remotely via admin commands)
+- Message compression (deflate) for efficient transfer
+- Web UI password protection (`--password` on client)
+- New message indicators and next-fetch countdown timer
+- Channel type badges (Private/Public)
+- Media type detection (`[IMAGE]`, `[VIDEO]`, etc.)
 - Live DNS query log in the browser
 - All data (config, cache) stored next to the binary
 
 ## Anti-DPI Features
 
-- **Variable response size**: Random padding (0-32 bytes) on each DNS response prevents fingerprinting by fixed packet size
-- **Single-label queries**: Base32 encoded subdomain in one DNS label (`abc123def.t.example.com`) instead of the more detectable two-label hex pattern
-- **Resolver shuffling**: Queries are distributed across resolvers randomly
-- **Rate limiting**: Configurable query rate to blend with normal DNS traffic
-- **Concurrency limiting**: Max 3 concurrent block fetches to avoid DNS bursts
-- **Random query padding**: 4 random bytes in each query payload
+- Variable response and query sizes to prevent fingerprinting
+- Multiple query encoding modes for stealth
+- Resolver shuffling and rate limiting
+- Background noise traffic
+- Message compression to minimize query count
 
 ## Protocol
 
-**Block size**: 180 bytes payload (fits in 512-byte UDP DNS with padding + encryption overhead)
-
-**Query format** (single-label, default): `[base32_encrypted].t.example.com`
-**Query format** (double-label): `[hex_part1].[hex_part2].t.example.com`
-- Payload: 4 random bytes + 2 channel + 2 block = 8 bytes, AES-256-GCM encrypted
-
-**Response**: `[2-byte length][data][random padding]` → AES-256-GCM encrypted → Base64
-
-**Encryption**: AES-256-GCM with HKDF-derived keys from shared passphrase
+All communication is encrypted with AES-256 and transmitted via standard DNS TXT queries and responses. Traffic is designed to blend with normal DNS activity. Message data is compressed before encryption.
 
 ## Quick Install (Server)
 
@@ -66,21 +65,25 @@ sudo bash install.sh
 
 The script will:
 1. Download the latest release binary from GitHub
-2. Ask for your domain, passphrase, Telegram credentials, channels
-3. Login to Telegram interactively (one-time)
-4. Set up a systemd service
+2. Ask for your domain, passphrase, and channels
+3. Ask whether to use Telegram login (recommended: **No** — public channels work without it)
+4. If Telegram mode: ask for API credentials and login
+5. Set up a systemd service
 
-Update: `sudo bash install.sh` (detects existing config, only updates binary)
-Re-login: `sudo bash install.sh --login`
-Uninstall: `sudo bash install.sh --uninstall`
+Update:
+```bash
+sudo bash <(curl -Ls https://raw.githubusercontent.com/sartoopjj/thefeed/main/scripts/install.sh)
+```
+Re-login: `sudo bash <(curl -Ls ...) --login`
+Uninstall: `sudo bash <(curl -Ls ...) --uninstall`
 
 ## Manual Setup
 
 ### Prerequisites
 
 - Go 1.26+
-- Telegram API credentials from https://my.telegram.org
 - A domain with NS records pointing to your server
+- Telegram API credentials from https://my.telegram.org (only if you need private channels)
 
 ### Server
 
@@ -106,7 +109,7 @@ make build-server
   --api-id 12345 \
   --api-hash "your-api-hash" \
   --phone "+1234567890" \
-  --listen ":5300"
+  --listen ":53"
 ```
 
 All data files (session, channels) are stored in the `--data-dir` directory (default: `./data`).
@@ -126,8 +129,11 @@ Environment variables: `THEFEED_DOMAIN`, `THEFEED_KEY`, `TELEGRAM_API_ID`, `TELE
 | `--phone` | | Telegram phone number (required) |
 | `--session` | `{data-dir}/session.json` | Path to Telegram session file |
 | `--login-only` | `false` | Authenticate to Telegram, save session, exit |
+| `--no-telegram` | `false` | Run without Telegram login (public channels only) |
 | `--listen` | `:5300` | DNS listen address |
 | `--padding` | `32` | Max random padding bytes (0=disabled) |
+| `--msg-limit` | `15` | Maximum messages to fetch per Telegram channel |
+| `--allow-manage` | `false` | Allow remote send/channel management (default: disabled) |
 | `--version` | | Show version and exit |
 
 ### Client
@@ -141,6 +147,9 @@ make build-client
 
 # Custom data directory and port
 ./build/thefeed-client --data-dir ./mydata --port 9090
+
+# With remote management enabled
+./build/thefeed-client --password "your-secret"
 ```
 
 On first run, the client creates a `./thefeeddata/` directory next to where you run it. Open `http://127.0.0.1:8080` in your browser and configure your domain, passphrase, and resolvers through the Settings page.
@@ -153,22 +162,41 @@ All configuration, cache, and data files are stored in the data directory.
 |------|---------|-------------|
 | `--data-dir` | `./thefeeddata` | Data directory for config, cache |
 | `--port` | `8080` | Web UI port |
+| `--password` | | Password for web UI (empty = no auth) |
 | `--version` | | Show version and exit |
+
+#### Android (Termux)
+
+```bash
+# Install Termux from F-Droid
+pkg update && pkg install curl
+
+# Download Android binary
+curl -Lo thefeed-client https://github.com/sartoopjj/thefeed/releases/latest/download/thefeed-client-android-arm64
+chmod +x thefeed-client
+./thefeed-client
+# Open in browser: http://127.0.0.1:8080
+```
 
 ### Web UI
 
 The browser-based UI has:
-- **Channels sidebar** (left): channel list with selection
+- **Channels sidebar** (left): channel list grouped by type (Public/Private) with badges
 - **Messages panel** (right): messages with native RTL/Farsi rendering (VazirMatn font)
+- **Send panel**: send messages to channels and private chats when Telegram is connected
+- **New message badges**: visual indicators for channels with new messages
+- **Next-fetch timer**: countdown to next automatic refresh
+- **Media detection**: `[IMAGE]`, `[VIDEO]`, `[DOCUMENT]` tag highlighting
 - **Log panel** (bottom): live DNS query log
-- **Settings modal**: configure domain, passphrase, resolvers, query mode, rate limit
+- **Settings modal**: configure domain, passphrase, resolvers, query mode, rate limit, timeout, debug mode
 
 ## Development
 
 ```bash
-make test        # Run tests
+make test        # Run tests with race detector
 make build       # Build both binaries
-make build-all   # Cross-compile all platforms
+make build-all   # Cross-compile all platforms (incl. Android)
+make upx         # Compress Linux/Windows/Android binaries with UPX
 make vet         # Go vet
 make fmt         # Format code
 make clean       # Remove build artifacts
@@ -219,14 +247,28 @@ This delegates all DNS queries for `t.example.com` (and its subdomains) to your 
 
 ## Security
 
-- All queries and responses are encrypted with AES-256-GCM
-- Separate HKDF-derived keys for queries and responses
-- Random padding in queries prevents caching and replay
-- Random padding in responses prevents DPI size fingerprinting
-- No session state — each query is independent
+### Two-Part Access Control
+
+**Encryption passphrase (`--key`):** Required on both server and client. Anyone with this passphrase can read all channel messages (including private channels). You can share it with trusted friends so they can read too.
+
+**Remote management (`--allow-manage` on server):** When enabled, anyone with the encryption key can also send messages and manage channels. Disabled by default. Only enable on trusted servers.
+
+**Client web password (`--password`):** Protects all web UI endpoints with HTTP Basic Auth. This is local protection only — it does NOT affect DNS-level access.
+
+### Security Properties
+
+- All communication is end-to-end encrypted (AES-256)
 - Pre-shared passphrase required for both client and server
-- Telegram 2FA password is prompted interactively (not stored in CLI args)
-- Session file stored with 0600 permissions
+- Each query is independent — no session state on the wire
+- Random padding in both directions prevents traffic analysis
+- Write operations gated by server-side `--allow-manage` flag
+- Telegram 2FA password is prompted interactively (never stored in args)
+- Session file stored with restricted permissions (0600)
+
+> **⚠️ Warning:** If you share your passphrase publicly, **anyone** can run their own
+> client with your passphrase and read all your messages. There is no way to prevent this.
+> The client `--password` flag only protects the web UI on your own machine — it does NOT stop
+> others from using the passphrase. **Never share your passphrase publicly.**
 
 ## Service Management
 
@@ -247,3 +289,13 @@ sudo bash scripts/install.sh
 ## License
 
 MIT
+
+---
+
+<div align="center">
+
+**For FREE IRAN 🇮🇷**
+
+*Everyone deserves free access to information*
+
+</div>

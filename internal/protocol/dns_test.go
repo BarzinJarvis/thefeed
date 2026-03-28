@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -88,49 +87,12 @@ func TestEncodeQueryTooLongDomain(t *testing.T) {
 	}
 }
 
-func TestEncodeDecodeQueryPlainLabel(t *testing.T) {
+func TestSingleLabelNotConfusedWithHex(t *testing.T) {
 	qk, _, err := DeriveKeys("test-key")
 	if err != nil {
 		t.Fatalf("DeriveKeys: %v", err)
 	}
 	domain := "t.example.com"
-	tests := []struct {
-		channel uint16
-		block   uint16
-	}{
-		{0, 0},
-		{1, 42},
-		{255, 65535},
-		{3, 100},
-	}
-	for _, tt := range tests {
-		qname, err := EncodeQuery(qk, tt.channel, tt.block, domain, QueryPlainLabel)
-		if err != nil {
-			t.Fatalf("EncodeQuery(%d, %d): %v", tt.channel, tt.block, err)
-		}
-		// Label should be "c<channel>b<block>" — human readable, no padding hex.
-		want := fmt.Sprintf("c%db%d.%s", tt.channel, tt.block, domain)
-		if qname != want {
-			t.Errorf("got %q, want %q", qname, want)
-		}
-		// DecodeQuery must recover channel and block regardless of key.
-		ch, blk, err := DecodeQuery(qk, qname, domain)
-		if err != nil {
-			t.Fatalf("DecodeQuery: %v", err)
-		}
-		if ch != tt.channel || blk != tt.block {
-			t.Errorf("got ch=%d blk=%d, want ch=%d blk=%d", ch, blk, tt.channel, tt.block)
-		}
-	}
-}
-
-func TestPlainLabelNotConfusedWithEncrypted(t *testing.T) {
-	qk, _, err := DeriveKeys("test-key")
-	if err != nil {
-		t.Fatalf("DeriveKeys: %v", err)
-	}
-	domain := "t.example.com"
-	// Encode with single-label then check that DecodeQuery does NOT treat it as plain.
 	qname, _ := EncodeQuery(qk, 5, 10, domain, QuerySingleLabel)
 	ch, blk, err := DecodeQuery(qk, qname, domain)
 	if err != nil {
@@ -233,5 +195,189 @@ func TestQueryDomainWithTrailingDot(t *testing.T) {
 	}
 	if ch != 1 || blk != 0 {
 		t.Errorf("got ch=%d blk=%d, want ch=1 blk=0", ch, blk)
+	}
+}
+
+func TestEncodeDecodeSendQuery(t *testing.T) {
+	qk, _, err := DeriveKeys("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+	domain := "t.example.com"
+	msg := []byte("Hello!")
+
+	qname, err := EncodeSendQuery(qk, 3, msg, domain, QuerySingleLabel)
+	if err != nil {
+		t.Fatalf("EncodeSendQuery: %v", err)
+	}
+
+	targetCh, gotMsg, err := DecodeSendQuery(qk, qname, domain)
+	if err != nil {
+		t.Fatalf("DecodeSendQuery: %v", err)
+	}
+	if targetCh != 3 {
+		t.Errorf("targetChannel = %d, want 3", targetCh)
+	}
+	if string(gotMsg) != string(msg) {
+		t.Errorf("message = %q, want %q", string(gotMsg), string(msg))
+	}
+}
+
+func TestEncodeDecodeSendQueryNoPassword(t *testing.T) {
+	qk, _, err := DeriveKeys("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+	domain := "t.example.com"
+	msg := []byte("No password")
+
+	qname, err := EncodeSendQuery(qk, 1, msg, domain, QuerySingleLabel)
+	if err != nil {
+		t.Fatalf("EncodeSendQuery: %v", err)
+	}
+
+	targetCh, gotMsg, err := DecodeSendQuery(qk, qname, domain)
+	if err != nil {
+		t.Fatalf("DecodeSendQuery: %v", err)
+	}
+	if targetCh != 1 {
+		t.Errorf("targetChannel = %d, want 1", targetCh)
+	}
+	if string(gotMsg) != string(msg) {
+		t.Errorf("message = %q, want %q", string(gotMsg), string(msg))
+	}
+}
+
+func TestEncodeDecodeAdminQuery(t *testing.T) {
+	qk, _, err := DeriveKeys("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+	domain := "t.example.com"
+
+	qname, err := EncodeAdminQuery(qk, AdminCmdAddChannel, []byte("testchan"), domain, QuerySingleLabel)
+	if err != nil {
+		t.Fatalf("EncodeAdminQuery: %v", err)
+	}
+
+	gotCmd, gotArg, err := DecodeAdminQuery(qk, qname, domain)
+	if err != nil {
+		t.Fatalf("DecodeAdminQuery: %v", err)
+	}
+	if gotCmd != AdminCmdAddChannel {
+		t.Errorf("cmd = %d, want %d", gotCmd, AdminCmdAddChannel)
+	}
+	if string(gotArg) != "testchan" {
+		t.Errorf("arg = %q, want %q", string(gotArg), "testchan")
+	}
+}
+
+func TestEncodeDecodeUpstreamInitQuery(t *testing.T) {
+	qk, _, err := DeriveKeys("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+	init := UpstreamInit{
+		SessionID:     0x1122,
+		TotalBlocks:   7,
+		Kind:          UpstreamKindSend,
+		TargetChannel: 15,
+	}
+	qname, err := EncodeUpstreamInitQuery(qk, init, "t.example.com", QuerySingleLabel)
+	if err != nil {
+		t.Fatalf("EncodeUpstreamInitQuery: %v", err)
+	}
+	// Init query should be a single compact label — no data labels
+	if strings.Count(strings.TrimSuffix(qname, ".t.example.com"), ".") != 0 {
+		t.Fatalf("init query should be a single label, got: %s", qname)
+	}
+	got, err := DecodeUpstreamInitQuery(qk, qname, "t.example.com")
+	if err != nil {
+		t.Fatalf("DecodeUpstreamInitQuery: %v", err)
+	}
+	if *got != init {
+		t.Fatalf("got %+v, want %+v", *got, init)
+	}
+}
+
+func TestEncodeDecodeUpstreamBlockQuery(t *testing.T) {
+	qk, _, err := DeriveKeys("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+	chunk := strings.Repeat("x", MaxUpstreamBlockPayload)
+	qname, err := EncodeUpstreamBlockQuery(qk, 0xAABB, 3, []byte(chunk), "t.example.com", QuerySingleLabel)
+	if err != nil {
+		t.Fatalf("EncodeUpstreamBlockQuery: %v", err)
+	}
+	if len(qname) > 253 {
+		t.Fatalf("upstream block query too long: %d", len(qname))
+	}
+	sessionID, index, gotChunk, err := DecodeUpstreamBlockQuery(qk, qname, "t.example.com")
+	if err != nil {
+		t.Fatalf("DecodeUpstreamBlockQuery: %v", err)
+	}
+	if sessionID != 0xAABB {
+		t.Fatalf("sessionID = %#x, want %#x", sessionID, 0xAABB)
+	}
+	if index != 3 {
+		t.Fatalf("index = %d, want 3", index)
+	}
+	if string(gotChunk) != chunk {
+		t.Fatalf("chunk = %q, want %q", string(gotChunk), chunk)
+	}
+}
+
+func TestEncodeUpstreamInitQueryRejectsInvalidBlockCount(t *testing.T) {
+	qk, _, err := DeriveKeys("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+	_, err = EncodeUpstreamInitQuery(qk, UpstreamInit{SessionID: 1, TotalBlocks: MaxUpstreamBlocks + 1, Kind: UpstreamKindAdmin}, "t.example.com", QuerySingleLabel)
+	if err == nil {
+		t.Fatal("expected invalid block count error")
+	}
+}
+
+func TestDecodeQueryRoutesUpstreamInitQuery(t *testing.T) {
+	qk, _, err := DeriveKeys("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+	init := UpstreamInit{
+		SessionID:     0xBEEF,
+		TotalBlocks:   1,
+		Kind:          UpstreamKindSend,
+		TargetChannel: 5,
+	}
+	qname, err := EncodeUpstreamInitQuery(qk, init, "t.example.com", QuerySingleLabel)
+	if err != nil {
+		t.Fatalf("EncodeUpstreamInitQuery: %v", err)
+	}
+	// DecodeQuery must extract the channel from multi-label upstream queries
+	ch, _, err := DecodeQuery(qk, qname, "t.example.com")
+	if err != nil {
+		t.Fatalf("DecodeQuery failed on upstream init query: %v", err)
+	}
+	if ch != UpstreamInitChannel {
+		t.Fatalf("channel = %#x, want %#x (UpstreamInitChannel)", ch, UpstreamInitChannel)
+	}
+}
+
+func TestDecodeQueryRoutesUpstreamBlockQuery(t *testing.T) {
+	qk, _, err := DeriveKeys("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+	qname, err := EncodeUpstreamBlockQuery(qk, 0xAABB, 0, []byte("HI"), "t.example.com", QuerySingleLabel)
+	if err != nil {
+		t.Fatalf("EncodeUpstreamBlockQuery: %v", err)
+	}
+	ch, _, err := DecodeQuery(qk, qname, "t.example.com")
+	if err != nil {
+		t.Fatalf("DecodeQuery failed on upstream block query: %v", err)
+	}
+	if ch != UpstreamDataChannel {
+		t.Fatalf("channel = %#x, want %#x (UpstreamDataChannel)", ch, UpstreamDataChannel)
 	}
 }

@@ -44,7 +44,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 # Cross-compilation targets
-build-all: build-linux-amd64 build-linux-arm64 build-darwin-amd64 build-darwin-arm64 build-windows-amd64
+build-all: build-linux-amd64 build-linux-arm64 build-darwin-amd64 build-darwin-arm64 build-windows-amd64 build-android-arm64
 
 build-linux-amd64:
 	@mkdir -p $(BUILD_DIR)
@@ -70,3 +70,16 @@ build-windows-amd64:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=windows GOARCH=amd64 go build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_SERVER)-windows-amd64.exe ./cmd/server
 	GOOS=windows GOARCH=amd64 go build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_CLIENT)-windows-amd64.exe ./cmd/client
+
+build-android-arm64:
+	@mkdir -p $(BUILD_DIR)
+	GOOS=android GOARCH=arm64 go build $(GOFLAGS) -o $(BUILD_DIR)/$(BINARY_CLIENT)-android-arm64 ./cmd/client
+
+# UPX compression (requires upx in PATH) — only for Linux/Windows binaries
+upx:
+	@command -v upx >/dev/null 2>&1 || { echo "upx not found, skipping compression"; exit 0; }
+	@for f in $(BUILD_DIR)/$(BINARY_SERVER)-linux-* $(BUILD_DIR)/$(BINARY_CLIENT)-linux-* \
+	          $(BUILD_DIR)/$(BINARY_SERVER)-windows-*.exe $(BUILD_DIR)/$(BINARY_CLIENT)-windows-*.exe \
+	          $(BUILD_DIR)/$(BINARY_CLIENT)-android-*; do \
+		if [ -f "$$f" ]; then echo "UPX: $$f"; upx --best --lzma "$$f" || true; fi \
+	done

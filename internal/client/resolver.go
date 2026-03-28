@@ -43,7 +43,7 @@ func (rc *ResolverChecker) SetLogFunc(fn LogFunc) {
 // ctx controls the lifetime — cancel it to stop the checker.
 func (rc *ResolverChecker) Start(ctx context.Context) {
 	go func() {
-		rc.runCheck()
+		rc.CheckNow()
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -51,13 +51,14 @@ func (rc *ResolverChecker) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				rc.runCheck()
+				rc.CheckNow()
 			}
 		}
 	}()
 }
 
-func (rc *ResolverChecker) runCheck() {
+// CheckNow runs a single resolver health-check pass immediately.
+func (rc *ResolverChecker) CheckNow() {
 	resolvers := rc.fetcher.AllResolvers()
 	if len(resolvers) == 0 {
 		return
@@ -90,6 +91,10 @@ func (rc *ResolverChecker) runCheck() {
 	wg.Wait()
 
 	rc.fetcher.SetActiveResolvers(healthy)
+	if len(healthy) == 0 {
+		rc.log("Resolver check done: 0/%d healthy", len(resolvers))
+		return
+	}
 	rc.log("Resolver check done: %d/%d healthy", len(healthy), len(resolvers))
 }
 
@@ -115,6 +120,7 @@ func (rc *ResolverChecker) checkOne(resolver string) bool {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(qname), dns.TypeTXT)
 	m.RecursionDesired = true
+	m.SetEdns0(1232, false)
 
 	resp, _, err := c.Exchange(m, resolver)
 	// We consider the resolver healthy if we get any DNS response back

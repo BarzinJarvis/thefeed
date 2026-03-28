@@ -142,6 +142,51 @@ setup_config() {
             echo -e "${red}Passphrase cannot be empty${plain}"
         done
 
+        echo ""
+        echo -e "${yellow}Allow remote management (send messages, add/remove channels)?${plain}"
+        echo -e "  If enabled, anyone with the passphrase can manage channels."
+        local allow_manage=""
+        read -rp "Enable remote management? [y/N]: " allow_manage
+
+        local no_telegram=""
+        echo ""
+        echo -e "${green}═══════════════════════════════════════${plain}"
+        echo -e "${green}  Telegram Mode Selection${plain}"
+        echo -e "${green}═══════════════════════════════════════${plain}"
+        echo ""
+        echo -e "${yellow}Option 1: Without Telegram (Recommended)${plain}"
+        echo -e "  - Safer: no Telegram credentials stored on server"
+        echo -e "  - Reads public channels without login"
+        echo -e "  - Cannot read private channels or send messages"
+        echo ""
+        echo -e "${yellow}Option 2: With Telegram${plain}"
+        echo -e "  - Required for private channels, groups, and sending messages"
+        echo -e "  - Needs Telegram API credentials and phone number"
+        echo ""
+        read -rp "Run without Telegram login? (recommended) [Y/n]: " no_telegram
+        if [[ "$no_telegram" != "n" && "$no_telegram" != "N" ]]; then
+            local api_id="0"
+            local api_hash="none"
+            local phone="none"
+            local listen_addr=""
+            read -rp "DNS listen address [0.0.0.0:53]: " listen_addr
+            listen_addr="${listen_addr:-0.0.0.0:53}"
+
+            cat > "$DATA_DIR/thefeed.env" <<ENVEOF
+THEFEED_DOMAIN=${domain}
+THEFEED_KEY=${passkey}
+THEFEED_ALLOW_MANAGE=$([ "$allow_manage" = "y" ] || [ "$allow_manage" = "Y" ] && echo "1" || echo "0")
+TELEGRAM_API_ID=${api_id}
+TELEGRAM_API_HASH=${api_hash}
+TELEGRAM_PHONE=${phone}
+THEFEED_LISTEN=${listen_addr}
+THEFEED_NO_TELEGRAM=1
+ENVEOF
+            chmod 600 "$DATA_DIR/thefeed.env"
+            echo -e "${green}Config saved to ${DATA_DIR}/thefeed.env${plain}"
+            return 0
+        fi
+
         local api_id=""
         while true; do
             read -rp "Telegram API ID: " api_id
@@ -169,6 +214,7 @@ setup_config() {
         cat > "$DATA_DIR/thefeed.env" <<ENVEOF
 THEFEED_DOMAIN=${domain}
 THEFEED_KEY=${passkey}
+THEFEED_ALLOW_MANAGE=$([ "$allow_manage" = "y" ] || [ "$allow_manage" = "Y" ] && echo "1" || echo "0")
 TELEGRAM_API_ID=${api_id}
 TELEGRAM_API_HASH=${api_hash}
 TELEGRAM_PHONE=${phone}
@@ -221,6 +267,14 @@ install_service() {
     source "$DATA_DIR/thefeed.env"
     set +a
 
+    local extra_flags=""
+    if [[ "${THEFEED_NO_TELEGRAM:-}" == "1" ]]; then
+        extra_flags="--no-telegram"
+    fi
+    if [[ "${THEFEED_ALLOW_MANAGE:-}" == "1" ]]; then
+        extra_flags="${extra_flags} --allow-manage"
+    fi
+
     cat > "$SERVICE_FILE" <<SVCEOF
 [Unit]
 Description=thefeed DNS-based Telegram Feed Server
@@ -238,7 +292,7 @@ ExecStart=${INSTALL_DIR}/thefeed-server \\
     --api-id \${TELEGRAM_API_ID} \\
     --api-hash \${TELEGRAM_API_HASH} \\
     --phone \${TELEGRAM_PHONE} \\
-    --listen \${THEFEED_LISTEN}
+    --listen \${THEFEED_LISTEN} ${extra_flags}
 
 Restart=on-failure
 RestartSec=10
@@ -282,9 +336,21 @@ show_usage() {
     echo -e "│  ${blue}Session:${plain}  ${DATA_DIR}/session.json           │"
     echo -e "│  ${blue}Binary:${plain}   ${INSTALL_DIR}/thefeed-server              │"
     echo -e "│                                                     │"
-    echo -e "│  ${yellow}Update:${plain} sudo bash install.sh                       │"
-    echo -e "│  ${yellow}Re-login:${plain} sudo bash install.sh --login             │"
+    echo -e "│  ${yellow}Quick commands (copy-paste):${plain}                       │"
+    echo -e "│  Update:    ${blue}bash <(curl -Ls URL) ${plain}               │"
+    echo -e "│  Uninstall: ${blue}bash <(curl -Ls URL) --uninstall${plain}   │"
+    echo -e "│  Re-login:  ${blue}bash <(curl -Ls URL) --login${plain}      │"
+    echo -e "│                                                     │"
+    echo -e "│  ${red}⚠ NEVER share your passphrase publicly!${plain}           │"
+    echo -e "│  ${red}Anyone with it can read ALL your messages.${plain}        │"
+    echo -e "│  ${red}--password only protects the web UI on your PC.${plain}   │"
     echo -e "└─────────────────────────────────────────────────────┘"
+    echo ""
+    echo -e "Full update command:"
+    echo -e "  ${blue}sudo bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/install.sh)${plain}"
+    echo ""
+    echo -e "Full uninstall command:"
+    echo -e "  ${blue}sudo bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/install.sh) --uninstall${plain}"
     echo ""
 }
 
@@ -324,11 +390,59 @@ install_thefeed() {
     # First install: full setup
     if [[ ! -f "$DATA_DIR/thefeed.env" ]]; then
         setup_config
-        telegram_login
+        set -a
+        source "$DATA_DIR/thefeed.env"
+        set +a
+        if [[ "${THEFEED_NO_TELEGRAM:-}" != "1" ]]; then
+            telegram_login
+        fi
         install_service
         start_service
     else
-        # Update: regenerate service file and restart
+        # Update: ask if user wants to change telegram mode, then regenerate service and restart
+        echo ""
+        set -a
+        source "$DATA_DIR/thefeed.env"
+        set +a
+        local current_mode="with Telegram"
+        if [[ "${THEFEED_NO_TELEGRAM:-}" == "1" ]]; then
+            current_mode="without Telegram"
+        fi
+        echo -e "Current mode: ${yellow}${current_mode}${plain}"
+        read -rp "Change Telegram mode? [y/N]: " change_mode
+        if [[ "$change_mode" == "y" || "$change_mode" == "Y" ]]; then
+            if [[ "${THEFEED_NO_TELEGRAM:-}" == "1" ]]; then
+                echo -e "${yellow}Switching to Telegram mode...${plain}"
+                # Remove no-telegram flag
+                sed -i '/THEFEED_NO_TELEGRAM/d' "$DATA_DIR/thefeed.env"
+                # Need telegram credentials
+                local api_id=""
+                while true; do
+                    read -rp "Telegram API ID: " api_id
+                    if [[ "$api_id" =~ ^[0-9]+$ ]]; then break; fi
+                    echo -e "${red}API ID must be a number${plain}"
+                done
+                local api_hash=""
+                while true; do
+                    read -rp "Telegram API Hash: " api_hash
+                    if [[ -n "$api_hash" ]]; then break; fi
+                    echo -e "${red}API Hash cannot be empty${plain}"
+                done
+                local phone=""
+                while true; do
+                    read -rp "Telegram phone number (e.g., +1234567890): " phone
+                    if [[ -n "$phone" ]]; then break; fi
+                    echo -e "${red}Phone number cannot be empty${plain}"
+                done
+                sed -i "s/^TELEGRAM_API_ID=.*/TELEGRAM_API_ID=${api_id}/" "$DATA_DIR/thefeed.env"
+                sed -i "s/^TELEGRAM_API_HASH=.*/TELEGRAM_API_HASH=${api_hash}/" "$DATA_DIR/thefeed.env"
+                sed -i "s/^TELEGRAM_PHONE=.*/TELEGRAM_PHONE=${phone}/" "$DATA_DIR/thefeed.env"
+                telegram_login
+            else
+                echo -e "${yellow}Switching to no-Telegram mode (safer)...${plain}"
+                echo "THEFEED_NO_TELEGRAM=1" >> "$DATA_DIR/thefeed.env"
+            fi
+        fi
         install_service
         start_service
     fi
@@ -384,6 +498,14 @@ show_help() {
     echo -e "  ${green}--login${plain}         Re-authenticate with Telegram"
     echo -e "  ${green}--uninstall${plain}     Remove thefeed"
     echo -e "  ${green}--help${plain}          Show this help"
+    echo ""
+    echo -e "No-Telegram mode (recommended for most users):"
+    echo -e "  Reads public Telegram channels without needing Telegram credentials."
+    echo -e "  Safer because no phone number or API keys are stored on the server."
+    echo ""
+    echo -e "Quick commands:"
+    echo -e "  Install/Update: ${blue}sudo bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/install.sh)${plain}"
+    echo -e "  Uninstall:      ${blue}sudo bash <(curl -Ls https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/install.sh) --uninstall${plain}"
 }
 
 # Main
