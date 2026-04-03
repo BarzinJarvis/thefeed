@@ -59,9 +59,9 @@ func (pr *PublicReader) Run(ctx context.Context) error {
 	pr.feed.SetTelegramLoggedIn(false)
 	pr.fetchAll(ctx)
 
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
-	pr.feed.SetNextFetch(uint32(time.Now().Add(5 * time.Minute).Unix()))
+	pr.feed.SetNextFetch(uint32(time.Now().Add(10 * time.Minute).Unix()))
 
 	for {
 		select {
@@ -69,7 +69,7 @@ func (pr *PublicReader) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			pr.fetchAll(ctx)
-			pr.feed.SetNextFetch(uint32(time.Now().Add(5 * time.Minute).Unix()))
+			pr.feed.SetNextFetch(uint32(time.Now().Add(10 * time.Minute).Unix()))
 		}
 	}
 }

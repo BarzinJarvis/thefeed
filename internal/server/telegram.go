@@ -140,10 +140,10 @@ func (tr *TelegramReader) Run(ctx context.Context) error {
 		tr.fetchAll(ctx, api)
 
 		// Periodic fetch loop
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 
-		tr.feed.SetNextFetch(uint32(time.Now().Add(5 * time.Minute).Unix()))
+		tr.feed.SetNextFetch(uint32(time.Now().Add(10 * time.Minute).Unix()))
 
 		for {
 			select {
@@ -151,15 +151,15 @@ func (tr *TelegramReader) Run(ctx context.Context) error {
 				return ctx.Err()
 			case <-ticker.C:
 				tr.fetchAll(ctx, api)
-				tr.feed.SetNextFetch(uint32(time.Now().Add(5 * time.Minute).Unix()))
+				tr.feed.SetNextFetch(uint32(time.Now().Add(10 * time.Minute).Unix()))
 			case <-tr.refreshCh:
 				// Invalidate cache so fetchAll re-fetches everything.
 				tr.mu.Lock()
 				tr.cache = make(map[string]cachedMessages)
 				tr.mu.Unlock()
 				tr.fetchAll(ctx, api)
-				ticker.Reset(5 * time.Minute)
-				tr.feed.SetNextFetch(uint32(time.Now().Add(5 * time.Minute).Unix()))
+				ticker.Reset(10 * time.Minute)
+				tr.feed.SetNextFetch(uint32(time.Now().Add(10 * time.Minute).Unix()))
 			}
 		}
 	})
