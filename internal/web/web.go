@@ -116,6 +116,13 @@ func New(dataDir string, port int, password string) (*Server, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
+	// Remove stale cache files on every startup, even before a config is loaded.
+	go func() {
+		if c, err := client.NewCache(filepath.Join(dataDir, "cache")); err == nil {
+			_ = c.Cleanup()
+		}
+	}()
+
 	s := &Server{
 		dataDir:         dataDir,
 		port:            port,
@@ -319,9 +326,21 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	msgs := s.messages[chNum]
+	chs := s.channels
+	cache := s.cache
 	s.mu.RUnlock()
 
-	writeJSON(w, msgs)
+	// Serve the persistent on-disk cache when available —
+	// it contains the full merged history (up to 200 messages) keyed by channel name.
+	if cache != nil && chNum >= 1 && chNum <= len(chs) {
+		if result := cache.GetMessages(chs[chNum-1].Name); result != nil {
+			writeJSON(w, result)
+			return
+		}
+	}
+
+	// Fall back to the in-memory fresh fetch (no accumulated history).
+	writeJSON(w, client.NewMessagesResult(msgs))
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -661,6 +680,7 @@ func (s *Server) initFetcher() error {
 
 	s.fetcher = fetcher
 	s.cache = cache
+	go cache.Cleanup() // remove channel files not updated in 7 days
 	return nil
 }
 
@@ -988,7 +1008,12 @@ func (s *Server) refreshChannel(channelNum int) {
 	s.mu.Unlock()
 
 	if cache != nil {
-		_ = cache.PutMessages(channelNum, msgs)
+		if result, mergeErr := cache.MergeAndPut(ch.Name, msgs); mergeErr == nil {
+			// Replace the in-memory store with the full merged history.
+			s.mu.Lock()
+			s.messages[channelNum] = result.Messages
+			s.mu.Unlock()
+		}
 	}
 
 	s.addLog(fmt.Sprintf("Updated %s: %d messages", ch.Name, len(msgs)))

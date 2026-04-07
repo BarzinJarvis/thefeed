@@ -513,6 +513,7 @@ async function init(){
     var r=await fetch('/api/status');var st=await r.json();
     await loadProfiles();
     if(!st.configured){openProfiles();return}
+    cleanupOldLocalStorageKeys();
     checkAndShowSavedResolversPrompt(st);
     telegramLoggedIn=!!st.telegramLoggedIn;
     serverNextFetch=st.nextFetch||0;
@@ -873,20 +874,8 @@ async function deleteEditingProfile(){
   }catch(e){}
 }
 
-// ===== CACHE (1 h localStorage per profile) =====
-function cacheKey(){return 'thefeed_cache_'+activeProfileId}
-function saveCache(data){try{localStorage.setItem(cacheKey(),JSON.stringify(data))}catch(e){}}
-function loadCache(){
-  try{
-    var raw=localStorage.getItem(cacheKey());if(!raw)return null;
-    var c=JSON.parse(raw);if(Date.now()-c.ts>3600000)return null; // 1 h TTL
-    return c;
-  }catch(e){return null}
-}
-
 // ===== CHANNELS =====
 async function loadChannels(){
-  var _c=loadCache();if(_c&&_c.channels&&_c.channels.length){channels=_c.channels;renderChannels();}
   try{
     var r=await fetch('/api/channels');channels=await r.json();if(!channels)channels=[];
     renderChannels();updateSendPanel();
@@ -894,7 +883,6 @@ async function loadChannels(){
     var sr=await fetch('/api/status');var st=await sr.json();
     telegramLoggedIn=!!st.telegramLoggedIn;
     if(st.nextFetch){serverNextFetch=st.nextFetch;updateNextFetchDisplay()}
-    var _cache=loadCache()||{messages:{}};_cache.channels=channels;_cache.ts=Date.now();saveCache(_cache);
   }catch(e){}
 }
 
@@ -997,77 +985,51 @@ function updateSendPanel(){
   else panel.classList.remove('visible');
 }
 
-// ===== PERSISTENT MESSAGE STORE =====
-function msgStoreKey(chNum){return 'thefeed_msgs_'+activeProfileId+'_'+chNum}
-function loadStoredMessages(chNum){
-  try{var raw=localStorage.getItem(msgStoreKey(chNum));return raw?JSON.parse(raw):[]}catch(e){return[]}
-}
-function saveStoredMessages(chNum,msgs){
+// TODO: Remove cleanupOldLocalStorageKeys() once all clients have migrated.
+// This purges thefeed_msgs_* keys written by the old HTML-side message cache.
+function cleanupOldLocalStorageKeys(){
   try{
-    // Keep max 200 messages, sorted by timestamp
-    msgs.sort(function(a,b){return(a.Timestamp||a.timestamp||0)-(b.Timestamp||b.timestamp||0)});
-    if(msgs.length>200)msgs=msgs.slice(msgs.length-200);
-    localStorage.setItem(msgStoreKey(chNum),JSON.stringify(msgs));
+    var toDelete=[];
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(k&&k.startsWith('thefeed_msgs_'))toDelete.push(k);
+    }
+    for(var j=0;j<toDelete.length;j++)localStorage.removeItem(toDelete[j]);
   }catch(e){}
-}
-function mergeMessages(stored,fresh){
-  var byId={};var merged=[];
-  for(var i=0;i<stored.length;i++){var id=stored[i].ID||stored[i].id;if(id){byId[id]=true;merged.push(stored[i])}}
-  for(var j=0;j<fresh.length;j++){var id2=fresh[j].ID||fresh[j].id;if(id2&&!byId[id2]){merged.push(fresh[j])}}
-  merged.sort(function(a,b){return(a.Timestamp||a.timestamp||0)-(b.Timestamp||b.timestamp||0)});
-  if(merged.length>200)merged=merged.slice(merged.length-200);
-  return merged;
 }
 
 // ===== MESSAGES =====
 async function loadMessages(chNum){
-  if(chNum===selectedChannel){
-    // Show persisted messages immediately
-    var stored=loadStoredMessages(chNum);
-    if(stored.length)renderMessages(stored);
-    else{var _c=loadCache();if(_c&&_c.messages&&_c.messages[''+chNum])renderMessages(_c.messages[''+chNum])}
-  }
   try{
     var r=await fetch('/api/messages/'+chNum);if(chNum!==selectedChannel)return;
-    var msgs=await r.json();if(chNum!==selectedChannel)return;
-    // Merge with stored messages
-    var stored2=loadStoredMessages(chNum);
-    var merged=mergeMessages(stored2,msgs||[]);
-    saveStoredMessages(chNum,merged);
-    renderMessages(merged);
+    var data=await r.json();if(chNum!==selectedChannel)return;
+    renderMessages(data.messages||[], data.gaps||[]);
     // Remove fetch progress bar for this channel
     var fetchBar=document.getElementById('prog-fetch-ch-'+chNum);if(fetchBar)fetchBar.remove();
-    var _cache=loadCache()||{channels:channels,messages:{}};if(!_cache.messages)_cache.messages={};_cache.messages[''+chNum]=msgs;_cache.ts=Date.now();saveCache(_cache);
     if(channels[chNum-1]){previousMsgIDs[chNum]=channels[chNum-1].LastMsgID||channels[chNum-1].lastMsgID||0;renderChannels()}
   }catch(e){}
 }
 
-function renderMessages(msgs){
+function renderMessages(msgs, gaps){
   var el=document.getElementById('messages');
   if(!msgs||!msgs.length){el.innerHTML='<div class="empty-state"><p>'+t('no_messages')+'</p><p style="font-size:12px;opacity:.6;margin-top:6px">'+t('no_messages_hint')+'</p></div>';return}
   // Check if user is near the bottom before re-render (within 150px)
   var wasAtBottom=el.scrollHeight-el.scrollTop-el.clientHeight<150;
   var isFirstRender=el.querySelector('.empty-state')!==null||el.querySelector('.msg')===null;
   msgs.sort(function(a,b){return(a.Timestamp||a.timestamp||0)-(b.Timestamp||b.timestamp||0)});
-  var html='',lastDate='',prevId=0;
+  var html='',lastDate='';
+  // Build a lookup: message ID → gap count to insert BEFORE that message.
+  var gapBefore={};
+  if(gaps){for(var g=0;g<gaps.length;g++){gapBefore[gaps[g].before_id]=gaps[g].count}}
   currentMsgTexts=[];
   var dateLocale=lang==='fa'?'fa-IR':'en-US';
   var dateOpts=lang==='fa'?{year:'numeric',month:'long',day:'numeric',calendar:'persian'}:{year:'numeric',month:'long',day:'numeric'};
   for(var i=0;i<msgs.length;i++){
     var msg=msgs[i];
     var id=msg.ID||msg.id;
-    // Gap detection: only show if IDs are close enough to be meaningful
-    // Telegram IDs can have natural gaps; only flag when we have stored history
-    // and the gap is between messages we've seen before vs new ones
-    if(prevId>0&&id>prevId+1){
-      var gap=id-prevId-1;
-      // Only show gap separator for small-ish gaps (likely real missed messages)
-      // and only when we have more than just a few messages (initial fetch won't trigger)
-      if(gap<=500&&msgs.length>=10){
-        html+='<div class="msg-gap-sep"><span>'+t('missed_messages').replace('{n}',gap)+'</span></div>';
-      }
+    if(gapBefore[id]){
+      html+='<div class="msg-gap-sep"><span>'+t('missed_messages').replace('{n}',gapBefore[id])+'</span></div>';
     }
-    prevId=id;
     var ts=new Date((msg.Timestamp||msg.timestamp)*1000);
     var dateStr=ts.toLocaleDateString(dateLocale,dateOpts);
     if(dateStr!==lastDate){html+='<div class="msg-date-sep"><span dir="auto">'+dateStr+'</span></div>';lastDate=dateStr}
