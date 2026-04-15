@@ -102,15 +102,32 @@ class MainActivity : ComponentActivity() {
     private fun showLockScreen() {
         lockScreenVisible = true
         val lockOverlay = findViewById<LinearLayout>(R.id.lockOverlay)
+        val lockTitle = findViewById<TextView>(R.id.lockTitle)
+        val lockSubtitle = findViewById<TextView>(R.id.lockSubtitle)
         val lockInput = findViewById<EditText>(R.id.lockPasswordInput)
         val lockBtn = findViewById<Button>(R.id.lockUnlockBtn)
         val lockError = findViewById<TextView>(R.id.lockError)
+
+        val prefs = getSharedPreferences(ThefeedService.PREFS_NAME, Context.MODE_PRIVATE)
+        val appName = prefs.getString(AndroidBridge.PREF_CUSTOM_APP_NAME, null)
+            ?.takeIf { it.isNotBlank() } ?: getString(R.string.app_name)
+        val lang = prefs.getString(AndroidBridge.PREF_LANG, "fa") ?: "fa"
+        val isPersian = lang == "fa"
+
+        lockTitle.text = appName
+        lockSubtitle.text = if (isPersian) "رمز عبور را وارد کنید" else "Enter password to unlock"
+        lockInput.hint = if (isPersian) "رمز عبور" else "Password"
+        lockBtn.text = if (isPersian) "ورود" else "Unlock"
+        if (isPersian) {
+            lockOverlay.layoutDirection = View.LAYOUT_DIRECTION_RTL
+        }
 
         lockOverlay.visibility = View.VISIBLE
         webView.visibility = View.GONE
         txtStatus.visibility = View.GONE
 
         val bridge = AndroidBridge(this)
+        val wrongPwText = if (isPersian) "رمز عبور اشتباه است" else "Wrong password"
 
         fun tryUnlock() {
             val pw = lockInput.text.toString()
@@ -122,7 +139,7 @@ class MainActivity : ComponentActivity() {
                 lockError.visibility = View.GONE
                 waitForServerThenLoad()
             } else {
-                lockError.text = "Wrong password"
+                lockError.text = wrongPwText
                 lockError.visibility = View.VISIBLE
             }
         }

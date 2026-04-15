@@ -2041,6 +2041,27 @@
         dns_timeout: 'تایم‌اوت DNS (ثانیه)',
         auto_scan: 'بررسی خودکار ریزالورها (هر ساعت)',
         scanner_clear_targets: '\uD83D\uDDD1 پاک کردن',
+        app_customization: 'شخصی\u200cسازی برنامه',
+        app_name_label: 'نام برنامه',
+        app_icon_label: 'آیکون برنامه',
+        app_apply: 'اعمال',
+        app_reset: 'بازنشانی',
+        app_identity_applied: 'نام و آیکون برنامه تغییر کرد!',
+        app_identity_failed: 'خطا در تغییر آیکون',
+        app_identity_name_only: 'نام برنامه ذخیره شد!',
+        app_reset_done: 'بازنشانی شد!',
+        app_password: 'رمز عبور برنامه',
+        password_new_ph: 'رمز عبور جدید',
+        password_confirm_ph: 'تکرار رمز عبور',
+        password_current_ph: 'رمز عبور فعلی',
+        password_set: 'تنظیم رمز',
+        password_remove: 'حذف رمز',
+        password_active: 'رمز عبور فعال است',
+        password_set_ok: 'رمز عبور تنظیم شد!',
+        password_removed: 'رمز عبور حذف شد!',
+        password_mismatch: 'رمزها مطابقت ندارند',
+        password_wrong: 'رمز عبور اشتباه است',
+        password_empty: 'رمز عبور نمی\u200cتواند خالی باشد',
       },
       en: {
         search: 'Search...', settings: 'Settings', profiles: 'Profiles',
@@ -2178,8 +2199,9 @@
         app_icon_label: 'App Icon',
         app_apply: 'Apply',
         app_reset: 'Reset',
-        app_shortcut_created: 'Shortcut created!',
-        app_shortcut_failed: 'Failed to create shortcut',
+        app_identity_applied: 'App icon and name changed!',
+        app_identity_failed: 'Failed to change app icon',
+        app_identity_name_only: 'App name saved!',
         app_reset_done: 'Reset done!',
         app_password: 'App Password',
         password_new_ph: 'New password',
@@ -2215,6 +2237,7 @@
       lang = l;
       localStorage.setItem('thefeed_lang', l);
       applyLang();
+      if (typeof Android !== 'undefined') try { Android.setLang(l) } catch (e) { }
       fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lang: l }) }).catch(function () { });
     }
 
@@ -2452,17 +2475,24 @@
     function applyAppCustomization() {
       if (typeof Android === 'undefined') return;
       var name = document.getElementById('customAppName').value.trim() || 'thefeed';
-      if (!_customIconData) { showToast(t('app_icon_label')); return }
-      try {
-        var ok = Android.createAppShortcut(name, _customIconData);
-        showToast(ok ? t('app_shortcut_created') : t('app_shortcut_failed'));
-      } catch (e) { showToast(t('app_shortcut_failed')) }
+      if (_customIconData) {
+        try {
+          var ok = Android.setAppIdentity(name, _customIconData);
+          showToast(ok ? t('app_identity_applied') : t('app_identity_failed'));
+        } catch (e) { showToast(t('app_identity_failed')) }
+      } else {
+        // Name-only change (no custom icon)
+        try {
+          Android.setAppIdentity(name, '');
+        } catch (e) { }
+        showToast(t('app_identity_name_only'));
+      }
     }
 
     function resetAppCustomization() {
       if (typeof Android === 'undefined') return;
       try {
-        Android.resetAppShortcut();
+        Android.resetAppIdentity();
         document.getElementById('customAppName').value = '';
         document.getElementById('customIconPreview').style.display = 'none';
         document.getElementById('customIconInput').value = '';
