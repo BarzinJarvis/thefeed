@@ -466,7 +466,7 @@ func (tr *TelegramReader) extractText(msg *tg.Message) string {
 }
 
 // applyTextURLEntities embeds hyperlink URLs from MessageEntityTextURL entities
-// into the message text, producing output like "display text (https://url)".
+// into the message text, producing output like "[display text](https://url)".
 // This mirrors what the public HTML reader does when it extracts <a> tags.
 // Offsets are in UTF-16 code units per the Telegram API spec.
 func applyTextURLEntities(text string, entities []tg.MessageEntityClass) string {
@@ -519,10 +519,11 @@ func applyTextURLEntities(text string, entities []tg.MessageEntityClass) string 
 		if string(runes[startIdx:endIdx]) == u.url {
 			continue
 		}
-		ins := []rune(" (" + u.url + ")")
-		newRunes := make([]rune, 0, len(runes)+len(ins))
-		newRunes = append(newRunes, runes[:endIdx]...)
-		newRunes = append(newRunes, ins...)
+		label := string(runes[startIdx:endIdx])
+		replacement := []rune("[" + label + "](" + u.url + ")")
+		newRunes := make([]rune, 0, len(runes)-len([]rune(label))+len(replacement))
+		newRunes = append(newRunes, runes[:startIdx]...)
+		newRunes = append(newRunes, replacement...)
 		newRunes = append(newRunes, runes[endIdx:]...)
 		runes = newRunes
 	}

@@ -196,7 +196,7 @@ func TestExtractMessageTextPreservesLinks(t *testing.T) {
 	}
 	node := findFirstByClass(doc, "tgme_widget_message_text")
 	text := extractMessageText(node)
-	want := "Check out this link (https://example.com) for details"
+	want := "Check out [this link](https://example.com) for details"
 	if text != want {
 		t.Fatalf("extractMessageText = %q, want %q", text, want)
 	}

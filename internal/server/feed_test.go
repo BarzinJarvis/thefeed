@@ -114,7 +114,7 @@ func TestApplyTextURLEntities(t *testing.T) {
 			entities: []tg.MessageEntityClass{
 				&tg.MessageEntityTextURL{Offset: 10, Length: 9, URL: "https://example.com"},
 			},
-			want: "Check out this link (https://example.com) for details",
+			want: "Check out [this link](https://example.com) for details",
 		},
 		{
 			name: "display text equals url",
@@ -139,7 +139,7 @@ func TestApplyTextURLEntities(t *testing.T) {
 				&tg.MessageEntityTextURL{Offset: 4, Length: 5, URL: "https://one.com"},
 				&tg.MessageEntityTextURL{Offset: 14, Length: 6, URL: "https://two.com"},
 			},
-			want: "see first (https://one.com) and second (https://two.com) links",
+			want: "see [first](https://one.com) and [second](https://two.com) links",
 		},
 		{
 			name: "emoji in text (surrogate pair)",
@@ -147,7 +147,7 @@ func TestApplyTextURLEntities(t *testing.T) {
 			entities: []tg.MessageEntityClass{
 				&tg.MessageEntityTextURL{Offset: 3, Length: 10, URL: "https://poll.com"},
 			},
-			want: "📊 click here (https://poll.com)",
+			want: "📊 [click here](https://poll.com)",
 		},
 		{
 			name: "non-text-url entities ignored",
