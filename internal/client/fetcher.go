@@ -966,6 +966,37 @@ func (f *Fetcher) SendMessage(ctx context.Context, channelNum int, text string) 
 	return nil
 }
 
+// FetchImage fetches a complete image from the server using the image channels.
+// Returns the raw image bytes.
+func (f *Fetcher) FetchImage(ctx context.Context, imageID uint16) ([]byte, error) {
+	metaData, err := f.FetchBlock(ctx, protocol.ImageMetaChannel, imageID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch image meta: %w", err)
+	}
+	if len(metaData) < 2 {
+		return nil, fmt.Errorf("invalid image meta: %d bytes", len(metaData))
+	}
+	totalBlocks := int(binary.BigEndian.Uint16(metaData))
+	if totalBlocks == 0 {
+		return nil, fmt.Errorf("image %d has 0 blocks", imageID)
+	}
+	if totalBlocks > 1024 {
+		return nil, fmt.Errorf("image %d too many blocks: %d", imageID, totalBlocks)
+	}
+
+	var allData []byte
+	for i := 0; i < totalBlocks; i++ {
+		blockNum := uint16(int(imageID)<<8 | i)
+		chunk, err := f.FetchBlock(ctx, protocol.ImageDataChannel, blockNum)
+		if err != nil {
+			return nil, fmt.Errorf("fetch image %d chunk %d/%d: %w", imageID, i, totalBlocks, err)
+		}
+		allData = append(allData, chunk...)
+		f.logProgress(fmt.Sprintf("Image %d", imageID), float64(i+1), float64(totalBlocks))
+	}
+	return allData, nil
+}
+
 // SendAdminCommand sends an admin command to the server via chunked upstream DNS queries.
 // The payload is a single AdminCmd byte followed by the argument string.
 func (f *Fetcher) SendAdminCommand(ctx context.Context, cmd protocol.AdminCmd, arg string) (string, error) {

@@ -109,10 +109,13 @@ func (pr *PublicReader) UpdateChannels(channels []string) {
 	pr.mu.Unlock()
 }
 
+const maxImageSize = 300 * 1024 // skip images larger than 300KB
+
 func (pr *PublicReader) fetchAll(ctx context.Context) {
 	log.Printf("[public] fetch cycle started for %d channels", len(pr.channels))
 	start := time.Now()
-	var fetched, failed int
+	pr.feed.ClearImages()
+	var fetched, failed, imgCount int
 	for i, username := range pr.channels {
 		chNum := pr.baseCh + i
 
@@ -123,11 +126,31 @@ func (pr *PublicReader) fetchAll(ctx context.Context) {
 			continue
 		}
 
-		msgs, err := pr.fetchChannel(ctx, username)
+		msgs, imageURLs, err := pr.fetchChannel(ctx, username)
 		if err != nil {
 			log.Printf("[public] fetch %s: %v", username, err)
 			failed++
 			continue
+		}
+
+		// Download images and assign IDs.
+		for idx, msg := range msgs {
+			imgURL, hasImg := imageURLs[msg.ID]
+			if !hasImg || imgURL == "" {
+				continue
+			}
+			imgData, dlErr := pr.downloadImage(ctx, imgURL)
+			if dlErr != nil {
+				log.Printf("[public] image download for msg %d: %v", msg.ID, dlErr)
+				continue
+			}
+			if len(imgData) > maxImageSize {
+				log.Printf("[public] image for msg %d too large (%d bytes), skipping", msg.ID, len(imgData))
+				continue
+			}
+			imageID := pr.feed.StoreImage(imgData)
+			msgs[idx].Text = strings.Replace(msg.Text, protocol.MediaImage, fmt.Sprintf("[IMAGE:%d]", imageID), 1)
+			imgCount++
 		}
 
 		// Merge new messages with previously cached ones to accumulate history.
@@ -147,29 +170,46 @@ func (pr *PublicReader) fetchAll(ctx context.Context) {
 		fetched++
 		log.Printf("[public] updated %s: %d messages", username, len(msgs))
 	}
-	log.Printf("[public] fetch cycle done in %s: %d fetched, %d failed, %d total", time.Since(start).Round(time.Millisecond), fetched, failed, len(pr.channels))
+	log.Printf("[public] fetch cycle done in %s: %d fetched, %d failed, %d images, %d total", time.Since(start).Round(time.Millisecond), fetched, failed, imgCount, len(pr.channels))
 }
 
-func (pr *PublicReader) fetchChannel(ctx context.Context, username string) ([]protocol.Message, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pr.baseURL+"/"+url.PathEscape(username), nil)
+func (pr *PublicReader) downloadImage(ctx context.Context, imgURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imgURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; thefeed/1.0; +https://github.com/sartoopjj/thefeed)")
-
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; thefeed/1.0)")
 	resp, err := pr.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %s", resp.Status)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, maxImageSize+1))
+}
+
+func (pr *PublicReader) fetchChannel(ctx context.Context, username string) ([]protocol.Message, map[uint32]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pr.baseURL+"/"+url.PathEscape(username), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; thefeed/1.0; +https://github.com/sartoopjj/thefeed)")
+
+	resp, err := pr.client.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected HTTP status: %s", resp.Status)
+		return nil, nil, fmt.Errorf("unexpected HTTP status: %s", resp.Status)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return parsePublicMessages(body)
 }
@@ -178,6 +218,7 @@ type publicMessage struct {
 	id        uint32
 	timestamp uint32
 	text      string
+	imageURL  string
 }
 
 // mergeMessages combines old cached messages with newly fetched ones.
@@ -200,12 +241,13 @@ func mergeMessages(old, new []protocol.Message) []protocol.Message {
 	return merged
 }
 
-func parsePublicMessages(body []byte) ([]protocol.Message, error) {
+func parsePublicMessages(body []byte) ([]protocol.Message, map[uint32]string, error) {
 	doc, err := html.Parse(strings.NewReader(string(body)))
 	if err != nil {
-		return nil, fmt.Errorf("parse html: %w", err)
+		return nil, nil, fmt.Errorf("parse html: %w", err)
 	}
 
+	imageURLs := make(map[uint32]string)
 	var collected []publicMessage
 	visitNodes(doc, func(n *html.Node) {
 		post := attrValue(n, "data-post")
@@ -218,9 +260,11 @@ func parsePublicMessages(body []byte) ([]protocol.Message, error) {
 		}
 		text := strings.TrimSpace(extractMessageText(findMessageBodyNode(n)))
 		mediaPrefix := ""
+		var imgURL string
 		switch {
 		case findFirstByClass(n, "tgme_widget_message_photo_wrap") != nil:
 			mediaPrefix = protocol.MediaImage
+			imgURL = extractImageURL(n)
 		case findFirstByClass(n, "tgme_widget_message_video_player") != nil ||
 			findFirstByClass(n, "tgme_widget_message_roundvideo_player") != nil:
 			mediaPrefix = protocol.MediaVideo
@@ -275,11 +319,12 @@ func parsePublicMessages(body []byte) ([]protocol.Message, error) {
 			id:        id,
 			timestamp: extractMessageTimestamp(n),
 			text:      text,
+			imageURL:  imgURL,
 		})
 	})
 
 	if len(collected) == 0 {
-		return nil, fmt.Errorf("no public messages found")
+		return nil, nil, fmt.Errorf("no public messages found")
 	}
 
 	sort.Slice(collected, func(i, j int) bool {
@@ -289,8 +334,11 @@ func parsePublicMessages(body []byte) ([]protocol.Message, error) {
 	msgs := make([]protocol.Message, 0, len(collected))
 	for _, msg := range collected {
 		msgs = append(msgs, protocol.Message{ID: msg.id, Timestamp: msg.timestamp, Text: msg.text})
+		if msg.imageURL != "" {
+			imageURLs[msg.id] = msg.imageURL
+		}
 	}
-	return msgs, nil
+	return msgs, imageURLs, nil
 }
 
 func visitNodes(n *html.Node, fn func(*html.Node)) {
@@ -530,6 +578,27 @@ func extractPollData(n *html.Node) string {
 		result += "\n" + strings.Join(options, "\n")
 	}
 	return result
+}
+
+func extractImageURL(n *html.Node) string {
+	photoNode := findFirstByClass(n, "tgme_widget_message_photo_wrap")
+	if photoNode == nil {
+		return ""
+	}
+	style := attrValue(photoNode, "style")
+	if style == "" {
+		return ""
+	}
+	idx := strings.Index(style, "url('")
+	if idx < 0 {
+		return ""
+	}
+	start := idx + 5
+	end := strings.Index(style[start:], "')")
+	if end < 0 {
+		return ""
+	}
+	return style[start : start+end]
 }
 
 // extractReplyID parses the href of the reply element to get the replied-to message ID.

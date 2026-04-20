@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
@@ -25,6 +26,8 @@ type Feed struct {
 	telegramLoggedIn bool
 	nextFetch        uint32
 	latestVersion    string
+	imageBlocks      map[uint16][][]byte // imageID → data blocks
+	nextImageID      uint16
 }
 
 // NewFeed creates a new Feed with the given channel names.
@@ -40,6 +43,7 @@ func NewFeed(channels []string) *Feed {
 	f.rotateMarker()
 	f.rebuildMetaBlocks()
 	f.rebuildVersionBlocks()
+	f.imageBlocks = make(map[uint16][][]byte)
 	return f
 }
 
@@ -80,6 +84,14 @@ func (f *Feed) GetBlock(channel, block int) ([]byte, error) {
 	}
 	if channel == int(protocol.VersionChannel) {
 		return f.getVersionBlock(block)
+	}
+	if channel == int(protocol.ImageMetaChannel) {
+		return f.getImageMeta(uint16(block))
+	}
+	if channel == int(protocol.ImageDataChannel) {
+		imageID := uint16(block >> 8)
+		chunkIdx := block & 0xFF
+		return f.getImageChunk(imageID, chunkIdx)
 	}
 
 	ch, ok := f.blocks[channel]
@@ -209,4 +221,43 @@ func (f *Feed) SetChannels(channels []string) {
 	defer f.mu.Unlock()
 	f.channels = channels
 	f.rebuildMetaBlocks()
+}
+
+// StoreImage splits raw image bytes into blocks and assigns an image ID.
+func (f *Feed) StoreImage(data []byte) uint16 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := f.nextImageID
+	f.nextImageID++
+	f.imageBlocks[id] = protocol.SplitIntoBlocks(data)
+	return id
+}
+
+// ClearImages removes all cached images and resets the ID counter.
+func (f *Feed) ClearImages() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.imageBlocks = make(map[uint16][][]byte)
+	f.nextImageID = 0
+}
+
+func (f *Feed) getImageMeta(imageID uint16) ([]byte, error) {
+	blocks, ok := f.imageBlocks[imageID]
+	if !ok {
+		return nil, fmt.Errorf("image %d not found", imageID)
+	}
+	buf := make([]byte, 2)
+	binary.BigEndian.PutUint16(buf, uint16(len(blocks)))
+	return buf, nil
+}
+
+func (f *Feed) getImageChunk(imageID uint16, chunkIdx int) ([]byte, error) {
+	blocks, ok := f.imageBlocks[imageID]
+	if !ok {
+		return nil, fmt.Errorf("image %d not found", imageID)
+	}
+	if chunkIdx < 0 || chunkIdx >= len(blocks) {
+		return nil, fmt.Errorf("image %d chunk %d out of range (%d chunks)", imageID, chunkIdx, len(blocks))
+	}
+	return blocks[chunkIdx], nil
 }

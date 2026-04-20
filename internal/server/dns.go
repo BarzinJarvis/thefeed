@@ -189,6 +189,18 @@ func (s *DNSServer) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	// Image channels are served directly without content tracking.
+	if channel == protocol.ImageMetaChannel || channel == protocol.ImageDataChannel {
+		data, err := s.feed.GetBlock(int(channel), int(block))
+		if err != nil {
+			m.Rcode = dns.RcodeNameError
+			w.WriteMsg(m)
+			return
+		}
+		s.writeEncodedResponse(w, m, q.Name, data)
+		return
+	}
+
 	s.trackRequestStart(channel, resolverHost(w.RemoteAddr()))
 	if s.debug {
 		log.Printf("[dns] query ch=%d blk=%d from=%s name=%s", channel, block, resolverHost(w.RemoteAddr()), q.Name)

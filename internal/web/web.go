@@ -222,6 +222,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/api/scanner/progress", s.handleScannerProgress)
 	mux.HandleFunc("/api/scanner/apply", s.handleScannerApply)
 	mux.HandleFunc("/api/scanner/presets", s.handleScannerPresets)
+	mux.HandleFunc("/api/image/", s.handleImage)
 	mux.HandleFunc("/", s.handleIndex)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)
@@ -2104,6 +2105,47 @@ func (s *Server) handleVersionCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{"ok": true, "latestVersion": v})
+}
+
+func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 {
+		http.Error(w, "missing image id", 400)
+		return
+	}
+	id, err := strconv.Atoi(parts[3])
+	if err != nil || id < 0 || id > 65535 {
+		http.Error(w, "invalid image id", 400)
+		return
+	}
+
+	s.mu.RLock()
+	fetcher := s.fetcher
+	basectx := s.fetcherCtx
+	s.mu.RUnlock()
+
+	if fetcher == nil || basectx == nil {
+		http.Error(w, "not configured", 400)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(basectx, 5*time.Minute)
+	defer cancel()
+
+	s.addLog(fmt.Sprintf("Fetching image %d...", id))
+	imgData, err := fetcher.FetchImage(ctx, uint16(id))
+	if err != nil {
+		log.Printf("[web] image fetch error id=%d: %v", id, err)
+		s.addLog(fmt.Sprintf("Image %d error: %v", id, err))
+		http.Error(w, "image fetch failed", 500)
+		return
+	}
+
+	s.addLog(fmt.Sprintf("Image %d loaded: %d bytes", id, len(imgData)))
+	ct := http.DetectContentType(imgData)
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "max-age=600")
+	w.Write(imgData)
 }
 
 // handleClearCache deletes all files in the cache directory.

@@ -46,6 +46,12 @@ const (
 	MsgContentHashSize = 4
 )
 
+// ImageMetaChannel serves image metadata (total block count) by imageID.
+const ImageMetaChannel uint16 = 0xFFF9
+
+// ImageDataChannel serves image data chunks. Block = (imageID << 8) | chunkIdx.
+const ImageDataChannel uint16 = 0xFFF8
+
 // Media placeholder strings for non-text content.
 const (
 	MediaImage    = "[IMAGE]"

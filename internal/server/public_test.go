@@ -28,7 +28,7 @@ func TestParsePublicMessages(t *testing.T) {
 		</body></html>
 	`)
 
-	msgs, err := parsePublicMessages(body)
+	msgs, _, err := parsePublicMessages(body)
 	if err != nil {
 		t.Fatalf("parsePublicMessages: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestParsePublicMessagesNoLimit(t *testing.T) {
 		</body></html>
 	`)
 
-	msgs, err := parsePublicMessages(body)
+	msgs, _, err := parsePublicMessages(body)
 	if err != nil {
 		t.Fatalf("parsePublicMessages: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestParsePublicMessagesReplyPreviewUsesMainBody(t *testing.T) {
 		</body></html>
 	`)
 
-	msgs, err := parsePublicMessages(body)
+	msgs, _, err := parsePublicMessages(body)
 	if err != nil {
 		t.Fatalf("parsePublicMessages: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestParsePublicMessagesReplyWithID(t *testing.T) {
 		</body></html>
 	`)
 
-	msgs, err := parsePublicMessages(body)
+	msgs, _, err := parsePublicMessages(body)
 	if err != nil {
 		t.Fatalf("parsePublicMessages: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestParsePublicMessagesPoll(t *testing.T) {
 		</body></html>
 	`)
 
-	msgs, err := parsePublicMessages(body)
+	msgs, _, err := parsePublicMessages(body)
 	if err != nil {
 		t.Fatalf("parsePublicMessages: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestParsePublicMessagesUnsupportedMedia(t *testing.T) {
 		</body></html>
 	`)
 
-	msgs, err := parsePublicMessages(body)
+	msgs, _, err := parsePublicMessages(body)
 	if err != nil {
 		t.Fatalf("parsePublicMessages: %v", err)
 	}
