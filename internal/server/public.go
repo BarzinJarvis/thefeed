@@ -114,7 +114,10 @@ const maxImageSize = 300 * 1024 // skip images larger than 300KB
 func (pr *PublicReader) fetchAll(ctx context.Context) {
 	log.Printf("[public] fetch cycle started for %d channels", len(pr.channels))
 	start := time.Now()
-	pr.feed.ClearImages()
+	expired := pr.feed.ExpireImages(2 * time.Hour)
+	if expired > 0 {
+		log.Printf("[public] expired %d images older than 2h, %d remain", expired, pr.feed.ImageCount())
+	}
 	var fetched, failed, imgCount int
 	for i, username := range pr.channels {
 		chNum := pr.baseCh + i
@@ -134,9 +137,27 @@ func (pr *PublicReader) fetchAll(ctx context.Context) {
 		}
 
 		// Download images and assign IDs.
+		// Build lookup of already-assigned image IDs from cached messages.
+		cachedImageIDs := make(map[uint32]string) // msgID → "[IMAGE:N]"
+		if ok {
+			for _, cm := range cached.msgs {
+				if idx := strings.Index(cm.Text, "[IMAGE:"); idx >= 0 {
+					end := strings.Index(cm.Text[idx:], "]")
+					if end > 0 {
+						cachedImageIDs[cm.ID] = cm.Text[idx : idx+end+1]
+					}
+				}
+			}
+		}
 		for idx, msg := range msgs {
 			imgURL, hasImg := imageURLs[msg.ID]
 			if !hasImg || imgURL == "" {
+				continue
+			}
+			// Reuse cached image ID if still in memory.
+			if tag, reuse := cachedImageIDs[msg.ID]; reuse {
+				msgs[idx].Text = strings.Replace(msg.Text, protocol.MediaImage, tag, 1)
+				imgCount++
 				continue
 			}
 			imgData, dlErr := pr.downloadImage(ctx, imgURL)

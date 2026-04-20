@@ -27,6 +27,7 @@ type Feed struct {
 	nextFetch        uint32
 	latestVersion    string
 	imageBlocks      map[uint16][][]byte // imageID → data blocks
+	imageStored      map[uint16]time.Time // imageID → when stored
 	nextImageID      uint16
 }
 
@@ -44,6 +45,7 @@ func NewFeed(channels []string) *Feed {
 	f.rebuildMetaBlocks()
 	f.rebuildVersionBlocks()
 	f.imageBlocks = make(map[uint16][][]byte)
+	f.imageStored = make(map[uint16]time.Time)
 	return f
 }
 
@@ -230,15 +232,35 @@ func (f *Feed) StoreImage(data []byte) uint16 {
 	id := f.nextImageID
 	f.nextImageID++
 	f.imageBlocks[id] = protocol.SplitIntoBlocks(data)
+	f.imageStored[id] = time.Now()
 	return id
 }
 
-// ClearImages removes all cached images and resets the ID counter.
-func (f *Feed) ClearImages() {
+// ExpireImages removes images older than maxAge and resets the ID counter
+// only when all images have expired.
+func (f *Feed) ExpireImages(maxAge time.Duration) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.imageBlocks = make(map[uint16][][]byte)
-	f.nextImageID = 0
+	now := time.Now()
+	expired := 0
+	for id, stored := range f.imageStored {
+		if now.Sub(stored) > maxAge {
+			delete(f.imageBlocks, id)
+			delete(f.imageStored, id)
+			expired++
+		}
+	}
+	if len(f.imageBlocks) == 0 {
+		f.nextImageID = 0
+	}
+	return expired
+}
+
+// ImageCount returns the number of cached images.
+func (f *Feed) ImageCount() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return len(f.imageBlocks)
 }
 
 func (f *Feed) getImageMeta(imageID uint16) ([]byte, error) {
