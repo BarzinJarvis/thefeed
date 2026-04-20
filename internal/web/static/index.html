@@ -2333,6 +2333,7 @@
     var currentMaxMsgID = 0;
     var currentMaxTimestamp = 0;
     var newMsgScrollDone = false;
+    var refreshingChannels = {}; // tracks channels with an in-flight refresh
 
     // ===== MOBILE NAV =====
     function openChat() {
@@ -2691,9 +2692,15 @@
         }
         if (data && typeof data === 'object' && data.type === 'no_changes') {
           showToast(t('no_new_messages'));
+          // Refresh done — clear progress bar
+          if (snapChannel > 0) { delete refreshingChannels[snapChannel]; var fb = document.getElementById('prog-fetch-ch-' + snapChannel); if (fb) fb.remove() }
         } else if (data && typeof data === 'object' && data.channel) {
+          delete refreshingChannels[data.channel]; var fb2 = document.getElementById('prog-fetch-ch-' + data.channel); if (fb2) fb2.remove();
           if (data.channel === snapChannel) await loadMessages(data.channel)
-        } else if (snapChannel > 0) { await loadMessages(snapChannel) }
+        } else if (snapChannel > 0) {
+          delete refreshingChannels[snapChannel]; var fb3 = document.getElementById('prog-fetch-ch-' + snapChannel); if (fb3) fb3.remove();
+          await loadMessages(snapChannel)
+        }
         updateSendPanel();
       });
       eventSource.onerror = function () {
@@ -3152,10 +3159,13 @@
       renderChannels(); updateSendPanel();
       document.getElementById('messages').innerHTML = '<div class="empty-state"><p>' + t('loading') + '</p></div>';
       document.getElementById('scrollDownBtn').classList.remove('visible');
-      // Show immediate feedback progress bar
-      showChannelFetchProgress(num, name);
       await loadMessages(num);
-      await doRefresh(false);
+      // Show progress bar and mark channel as refreshing so the bar persists
+      // through the metadata fetch + channel fetch (~5 s). The bar is removed
+      // when the SSE update arrives with fresh data for this channel.
+      showChannelFetchProgress(num, name);
+      refreshingChannels[num] = true;
+      doRefresh(false);
     }
 
     function showChannelFetchProgress(num, name) {
@@ -3167,8 +3177,9 @@
       item.dataset.lastUpdate = Date.now();
       item.innerHTML = '<button class="progress-close" onclick="this.parentNode.remove()" title="Dismiss">&times;</button><div class="progress-label">' + t('fetching_channel') + ' ' + (name || num) + '</div><div class="progress-bar"><div class="progress-fill" style="width:40%;animation:prog-pulse 1.5s ease-in-out infinite"></div></div>';
       panel.insertBefore(item, panel.firstChild);
-      // Auto-remove after messages load or after timeout
-      setTimeout(function () { var el = document.getElementById(id); if (el) el.remove() }, 15000);
+      // Safety auto-remove: metadata fetch typically completes within ~5 s;
+      // the real block-progress bar replaces this one as soon as blocks arrive.
+      setTimeout(function () { var el = document.getElementById(id); if (el) el.remove() }, 8000);
     }
 
     function updateSendPanel() {
@@ -3185,8 +3196,10 @@
         var r = await fetch('/api/messages/' + chNum); if (chNum !== selectedChannel) return;
         var data = await r.json(); if (chNum !== selectedChannel) return;
         renderMessages(data.messages || [], data.gaps || []);
-        // Remove fetch progress bar for this channel
-        var fetchBar = document.getElementById('prog-fetch-ch-' + chNum); if (fetchBar) fetchBar.remove();
+        // Remove fetch progress bar only if no refresh is in flight for this channel
+        if (!refreshingChannels[chNum]) {
+          var fetchBar = document.getElementById('prog-fetch-ch-' + chNum); if (fetchBar) fetchBar.remove();
+        }
         if (channels[chNum - 1]) { var cn = channels[chNum - 1].Name || channels[chNum - 1].name || ''; previousMsgIDs[cn] = channels[chNum - 1].LastMsgID || channels[chNum - 1].lastMsgID || 0; renderChannels() }
       } catch (e) { }
     }
@@ -3459,6 +3472,8 @@
       var label = (fracMatch ? (completed + '/' + total) : ('Channel ' + channelNum)) + (chName ? ' (' + chName + ')' : '');
       var panel = document.getElementById('progressPanel');
       var item = document.getElementById('prog-ch-' + channelNum);
+      // First block arrived — metadata fetch is done, remove the static "fetching" bar
+      var fetchBar = document.getElementById('prog-fetch-ch-' + channelNum); if (fetchBar) fetchBar.remove();
       if (!item) {
         item = document.createElement('div'); item.id = 'prog-ch-' + channelNum; item.className = 'progress-item';
         item.innerHTML = '<button class="progress-close" onclick="this.parentNode.remove()" title="Dismiss">&times;</button><div class="progress-label"></div><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>';
@@ -3529,7 +3544,13 @@
       var btn = document.getElementById('refreshBtn');
       btn.style.animation = 'spin .8s linear';
       showToast(t('refreshing'));
-      await doRefresh(false);
+      if (selectedChannel > 0) {
+        var ch = channels[selectedChannel - 1];
+        var name = (ch && (ch.Name || ch.name)) || 'Channel ' + selectedChannel;
+        showChannelFetchProgress(selectedChannel, name);
+        refreshingChannels[selectedChannel] = true;
+      }
+      doRefresh(false);
       setTimeout(function () { btn.style.animation = '' }, 800);
     }
     async function doRefresh(quiet) {
