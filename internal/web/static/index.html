@@ -205,6 +205,24 @@
       flex-shrink: 0
     }
 
+    .icon-btn svg, .send-btn svg, .back-btn svg, .scroll-down-btn svg {
+      width: 20px;
+      height: 20px;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      flex-shrink: 0
+    }
+
+    .icon-btn svg.filled { fill: currentColor; stroke: none }
+
+    .send-btn svg { width: 22px; height: 22px }
+    .back-btn svg { width: 22px; height: 22px }
+    .scroll-down-btn svg { width: 20px; height: 20px }
+    .big-icon svg { width: 52px; height: 52px; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; fill: none; opacity: .25 }
+
     .icon-btn:hover {
       background: var(--hover);
       color: var(--text)
@@ -1542,8 +1560,8 @@
             <span class="profile-btn-name" id="profileBtnName" data-i18n="set_up">Set Up</span>
             <span class="profile-btn-arrow"><span class="plus">+</span>&#9660;</span>
           </button>
-          <button class="icon-btn" onclick="openSettings()" title="Settings" data-i18n-title="settings">&#9881;</button>
-          <button class="icon-btn" onclick="jumpToLog()" title="Log" data-i18n-title="sidebar_log" style="font-size:16px">&#128220;</button>
+          <button class="icon-btn" onclick="openSettings()" title="Settings" data-i18n-title="settings"><svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          <button class="icon-btn" onclick="jumpToLog()" title="Log" data-i18n-title="sidebar_log"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></button>
         </div>
         <div class="sidebar-toolbar">
           <button class="stb" id="scannerIconBtn" onclick="openScanner()" data-i18n="scanner_find_resolvers">Find Resolvers</button>
@@ -1566,7 +1584,7 @@
     <!-- CHAT AREA -->
     <div class="chat-area">
       <div class="chat-header">
-        <button class="back-btn" onclick="openSidebar()">&#8592;</button>
+        <button class="back-btn" onclick="openSidebar()"><svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg></button>
         <div class="chat-header-info">
           <div class="chat-header-name" id="chatName">thefeed</div>
         </div>
@@ -1579,21 +1597,21 @@
           <button class="icon-btn" onclick="openExportModal()" title="Export" data-i18n-title="export_messages"
             style="width:auto;height:30px;font-size:12px;padding:0 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface)" data-i18n="export_messages">Export</button>
           <button class="icon-btn" id="refreshBtn" onclick="doRefreshUI()" title="Refresh"
-            style="width:40px;height:40px;font-size:20px">&#8635;</button>
+            style="width:40px;height:40px"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
         </div>
       </div>
       <div class="msg-search-bar" id="msgSearchBar">
         <input type="text" id="msgSearchInput" data-i18n-ph="search_messages" placeholder="Search messages..." oninput="doMsgSearch()">
         <div class="search-nav">
           <span id="msgSearchCount"></span>
-          <button onclick="msgSearchPrev()" title="Previous">&#9650;</button>
-          <button onclick="msgSearchNext()" title="Next">&#9660;</button>
+          <button onclick="msgSearchPrev()" title="Previous"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><polyline points="18 15 12 9 6 15"/></svg></button>
+          <button onclick="msgSearchNext()" title="Next"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><polyline points="6 9 12 15 18 9"/></svg></button>
           <button onclick="closeMsgSearch()" title="Close">&times;</button>
         </div>
       </div>
       <div class="messages" id="messages">
         <div class="empty-state">
-          <div class="big-icon">&#128225;</div>
+          <div class="big-icon"><svg viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></div>
           <p data-i18n="configure_server">Configure a server to start reading</p>
           <button class="btn btn-primary" onclick="openProfiles()" data-i18n="set_up">Set Up</button>
         </div>
@@ -1601,12 +1619,12 @@
       <div class="send-panel" id="sendPanel">
         <input class="send-input" id="sendInput" data-i18n-ph="write_message" placeholder="Write a message..."
           maxlength="4000">
-        <button class="send-btn" onclick="sendMessage()">&#10148;</button>
+        <button class="send-btn" onclick="sendMessage()"><svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>
       </div>
-      <button class="scroll-down-btn" id="scrollDownBtn" onclick="scrollToBottom()" title="Jump to latest">&#8595;<span
+      <button class="scroll-down-btn" id="scrollDownBtn" onclick="scrollToBottom()" title="Jump to latest"><svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg><span
           class="scroll-down-badge" id="scrollDownBadge"></span></button>
       <div class="progress-panel" id="progressPanel"></div>
-      <div class="log-toggle" onclick="toggleLog()"><span>LOG</span><span id="logToggleIcon">&#9654;</span></div>
+      <div class="log-toggle" onclick="toggleLog()"><span>LOG</span><span id="logToggleIcon"><svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><polyline points="9 18 15 12 9 6"/></svg></span></div>
       <div class="log-panel hidden" id="logPanel"></div>
     </div>
   </div>
@@ -1632,11 +1650,17 @@
   <!-- ===== SETTINGS MODAL ===== -->
   <div class="modal-overlay" id="settingsModal">
     <div class="modal">
-      <h2 data-i18n="settings">&#9881; Settings</h2>
+      <h2 data-i18n="settings"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" style="vertical-align:middle;margin-right:6px"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg> Settings</h2>
       <div class="font-size-row">
         <label data-i18n="font_size">Font Size</label>
         <input type="range" id="fontSizeSlider" min="11" max="22" value="14" oninput="previewFontSize(this.value)">
         <span class="font-size-val" id="fontSizeVal">14</span>
+      </div>
+      <div class="form-group">
+        <div class="row">
+          <input type="checkbox" id="cfgNotifications" onchange="toggleNotifications(this.checked)">
+          <label for="cfgNotifications"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" style="vertical-align:middle;margin-right:4px"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg> <span data-i18n="notifications">Notifications</span></label>
+        </div>
       </div>
       <div class="form-group">
         <div class="row">
@@ -1865,7 +1889,7 @@
         <label for="bankAutoScan" style="font-size:12px;cursor:pointer" data-i18n="auto_scan">Automatic hourly resolver check</label>
       </div>
       <div class="modal-actions">
-        <button class="btn btn-outline" onclick="openScannerFromBank()" data-i18n="scanner_find_resolvers">&#128269; Find Resolvers</button>
+        <button class="btn btn-outline" onclick="openScannerFromBank()" data-i18n="scanner_find_resolvers"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" style="vertical-align:middle;margin-right:4px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Find Resolvers</button>
         <button class="btn btn-outline" onclick="doRescanFromBank()" data-i18n="rescan">Rescan</button>
         <button class="btn btn-outline" onclick="resetScoreboard()" data-i18n="reset_scoreboard">Reset Scores</button>
         <button class="btn btn-outline" onclick="copyResolversList()" data-i18n="copy">Copy</button>
@@ -1877,7 +1901,7 @@
   <!-- ===== SCANNER MODAL ===== -->
   <div class="modal-overlay" id="scannerModal">
     <div class="modal" style="max-width:520px">
-      <h2 data-i18n="scanner_title">&#128269; Resolver Scanner</h2>
+      <h2 data-i18n="scanner_title"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" style="vertical-align:middle;margin-right:6px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Resolver Scanner</h2>
 
       <!-- Collapsible help -->
       <div style="margin-bottom:14px">
@@ -1894,7 +1918,7 @@
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
             <label data-i18n="scanner_targets">IPs or CIDRs (one per line)</label>
             <div style="display:flex;gap:4px">
-              <button class="btn btn-flat" onclick="document.getElementById('scanTargets').value='';updateScanIpCount()" data-i18n="scanner_clear_targets" style="font-size:12px;padding:4px 10px">&#128465; Clear</button>
+              <button class="btn btn-flat" onclick="document.getElementById('scanTargets').value='';updateScanIpCount()" data-i18n="scanner_clear_targets" style="font-size:12px;padding:4px 10px"><svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none" style="vertical-align:middle;margin-right:2px"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Clear</button>
               <button class="btn btn-flat" onclick="loadScannerPresets()" style="font-size:12px;padding:4px 10px"><img class="iran-flag-icon" src="/static/iran-lion-sun.svg" alt="IR" style="height:14px;vertical-align:middle;margin-right:2px"> <span data-i18n="scanner_load_presets">Load IR Presets</span></button>
             </div>
           </div>
@@ -2008,7 +2032,7 @@
         no_messages_hint: 'برنامه در حال دریافت پیام‌ها است. لطفاً چند لحظه صبر کنید...',
         write_message: 'پیام بنویسید...', configure_server: 'برای شروع یک سرور راه‌اندازی کنید',
         set_up: 'راه‌اندازی', switching: 'در حال تغییر پروفایل...',
-        font_size: 'اندازه قلم', debug_mode: 'حالت دیباگ', language: 'زبان',
+        font_size: 'اندازه قلم', debug_mode: 'حالت دیباگ', notifications: 'اعلان‌ها', language: 'زبان',
         next_fetch_info: 'زمان باقی‌مانده تا دریافت بعدی محتوا توسط سرور',
         no_profiles: 'هنوز پروفایلی وجود ندارد', add_profile: '+ پروفایل جدید',
         import_uri_label: 'وارد کردن پیوند (URI)', import_uri_ph: 'thefeed://...', import: 'وارد کردن', close: 'بستن',
@@ -2037,7 +2061,7 @@
         msg_copied: 'پیام کپی شد!', rescan_started: 'بررسی مجدد شروع شد', no_new_messages: 'پیام جدیدی نیست',
         add_manual: '✎ ساخت دستی', rescan: 'بررسی مجدد',
         new_messages: 'پیام جدید', missed_messages: '{n} پیام از دست رفته یا حذف شده',
-        clear_cache: 'پاک کردن کش', clear_cache_btn: '🗑 پاک کردن کش', cache_cleared: 'کش پاک شد!',
+        clear_cache: 'پاک کردن کش', clear_cache_btn: 'پاک کردن کش', cache_cleared: 'کش پاک شد!',
         saved_resolvers_title: 'شروع سریع',
         saved_resolvers_msg: 'آخرین اسکن ({t}) نتیجه داد: {n} سرور DNS سالم پیدا شد. همین‌ها را استفاده کنیم یا دوباره اسکن کنیم؟',
         saved_resolvers_use: 'استفاده کن (بدون اسکن)',
@@ -2159,7 +2183,7 @@
         no_messages_hint: 'The app is trying to fetch messages. Please wait a moment...',
         write_message: 'Write a message...', configure_server: 'Configure a server to start reading',
         set_up: 'Set Up', switching: 'Switching profile...',
-        font_size: 'Font Size', debug_mode: 'Debug mode', language: 'Language',
+        font_size: 'Font Size', debug_mode: 'Debug mode', notifications: 'Notifications', language: 'Language',
         next_fetch_info: 'Time until the server next fetches fresh channel content',
         no_profiles: 'No profiles yet', add_profile: '+ Add Profile',
         import_uri_label: 'Import URI', import_uri_ph: 'thefeed://...', import: 'Import', close: 'Close',
@@ -2188,7 +2212,7 @@
         msg_copied: 'Message copied!', rescan_started: 'Rescan started', no_new_messages: 'No new messages',
         add_manual: '✎ Create Manually', rescan: 'Rescan',
         new_messages: 'New messages', missed_messages: '{n} messages missed or deleted',
-        clear_cache: 'Clear Cache', clear_cache_btn: '🗑 Clear Cache', cache_cleared: 'Cache cleared!',
+        clear_cache: 'Clear Cache', clear_cache_btn: 'Clear Cache', cache_cleared: 'Cache cleared!',
         saved_resolvers_title: 'Quick Start',
         saved_resolvers_msg: 'Last scan ({t}) found {n} healthy DNS servers. Use them now (no scan needed), or scan again to re-verify.',
         saved_resolvers_use: 'Use Now (skip scan)',
@@ -2353,12 +2377,57 @@
       document.querySelectorAll('.ch-item').forEach(function (el) { el.style.display = el.dataset.name.toLowerCase().includes(q) ? 'flex' : 'none' });
     }
 
+    // ===== NOTIFICATIONS =====
+    var notificationsEnabled = localStorage.getItem('thefeed_notifications') === 'true';
+
+    function toggleNotifications(enabled) {
+      if (enabled && 'Notification' in window) {
+        Notification.requestPermission().then(function(perm) {
+          if (perm === 'granted') {
+            notificationsEnabled = true;
+            localStorage.setItem('thefeed_notifications', 'true');
+            document.getElementById('cfgNotifications').checked = true;
+            showToast('Notifications enabled');
+          } else {
+            notificationsEnabled = false;
+            localStorage.setItem('thefeed_notifications', 'false');
+            document.getElementById('cfgNotifications').checked = false;
+            showToast('Notification permission denied');
+          }
+        });
+      } else {
+        notificationsEnabled = false;
+        localStorage.setItem('thefeed_notifications', 'false');
+      }
+    }
+
+    function sendNotification(title, body) {
+      if (!notificationsEnabled || !('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+      if (document.hasFocus()) return;
+      try {
+        var n = new Notification(title, {
+          body: body.substring(0, 200),
+          icon: '/static/iran-lion-sun-dark.svg',
+          tag: 'thefeed-' + title,
+          silent: false
+        });
+        n.onclick = function() { window.focus(); n.close(); };
+        setTimeout(function() { n.close() }, 8000);
+      } catch(e) {}
+    }
+
+    function initNotifications() {
+      document.getElementById('cfgNotifications').checked = notificationsEnabled;
+    }
+
     // ===== INIT =====
     async function init() {
       loadTheme();
       applyLang();
       await loadFontSize();
       loadBgImage();
+      initNotifications();
       connectSSE();
       refreshResolversBadge();
       try {
@@ -2692,6 +2761,9 @@
         }
         if (data && typeof data === 'object' && data.type === 'no_changes') {
           showToast(t('no_new_messages'));
+        } else if (data && typeof data === 'object' && data.channel && notificationsEnabled) {
+          var ch = channels.find(function(c) { return c.number === data.channel });
+          if (ch) sendNotification(ch.name || ('Channel ' + data.channel), t('new_messages'));
           // Refresh done — clear progress bar
           if (snapChannel > 0) { delete refreshingChannels[snapChannel]; var fb = document.getElementById('prog-fetch-ch-' + snapChannel); if (fb) fb.remove() }
         } else if (data && typeof data === 'object' && data.channel) {
@@ -3076,7 +3148,7 @@
       _renderChannelsTimer = null;
       var el = document.getElementById('channelList');
       if (!channels || !channels.length) {
-        var _hint = resolverScanHint || (t('no_channels_hint') + ' <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px">&#128220;</button> ' + t('no_channels_hint2'));
+        var _hint = resolverScanHint || (t('no_channels_hint') + ' <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></button> ' + t('no_channels_hint2'));
         el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:13px">' + t('no_channels') + '<br><span id="no-ch-hint" style="font-size:11px;opacity:.7;line-height:1.8">' + _hint + '</span></div>'; return
       }
       // Fast-path: if channel count matches existing items, just update classes/badges
@@ -3413,7 +3485,7 @@
         item.querySelector('.progress-label').textContent = t('scanning_resolvers') + ' 0/' + total;
         item.querySelector('.progress-fill').style.width = '0%';
         item.dataset.lastUpdate = Date.now();
-        resolverScanHint = t('scanning_resolvers') + '... <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px">&#128220;</button>';
+        resolverScanHint = t('scanning_resolvers') + '... <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></button>';
         var hintEl = document.getElementById('no-ch-hint'); if (hintEl) hintEl.innerHTML = resolverScanHint;
         return;
       }
@@ -3432,7 +3504,7 @@
         item.querySelector('.progress-label').textContent = label;
         item.querySelector('.progress-fill').style.width = pct + '%';
         item.dataset.lastUpdate = Date.now();
-        resolverScanHint = t('scanning_resolvers') + ' (' + done + '/' + tot + ', \u2713' + resolverScanHealthy + ')' + ' <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px">&#128220;</button>';
+        resolverScanHint = t('scanning_resolvers') + ' (' + done + '/' + tot + ', \u2713' + resolverScanHealthy + ')' + ' <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></button>';
         var hintEl = document.getElementById('no-ch-hint'); if (hintEl) hintEl.innerHTML = resolverScanHint;
         return;
       }
@@ -3452,7 +3524,7 @@
         resolverScanHint = '';
         // Remove init loading bar if it's still around
         var initItem = document.getElementById('prog-init'); if (initItem) initItem.remove();
-        var hintEl = document.getElementById('no-ch-hint'); if (hintEl) hintEl.innerHTML = t('no_channels_hint') + ' <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px">&#128220;</button> ' + t('no_channels_hint2');
+        var hintEl = document.getElementById('no-ch-hint'); if (hintEl) hintEl.innerHTML = t('no_channels_hint') + ' <button onclick="jumpToLog()" style="background:none;border:none;cursor:pointer;font-size:13px;vertical-align:middle;padding:0 2px"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></button> ' + t('no_channels_hint2');
         setTimeout(function () { if (item.parentNode) item.parentNode.removeChild(item) }, 2000);
         // Scan is done — load channels in case the SSE 'update' event was dropped.
         setTimeout(function () { loadChannels().then(function () { if (channels.length > 0 && selectedChannel === 0) selectChannel(1) }) }, 3000);
@@ -3500,13 +3572,13 @@
       logVisible = !logVisible;
       var p = document.getElementById('logPanel'); var ic = document.getElementById('logToggleIcon');
       p.classList.toggle('hidden', !logVisible);
-      ic.innerHTML = logVisible ? '&#9660;' : '&#9654;';
+      ic.innerHTML = logVisible ? '<svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><polyline points="6 9 12 15 18 9"/></svg>' : '<svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><polyline points="9 18 15 12 9 6"/></svg>';
     }
     function openLog() {
       if (logVisible) return;
       logVisible = true;
       document.getElementById('logPanel').classList.remove('hidden');
-      document.getElementById('logToggleIcon').innerHTML = '&#9660;';
+      document.getElementById('logToggleIcon').innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2.5" fill="none"><polyline points="6 9 12 15 18 9"/></svg>';
     }
     function jumpToLog() {
       openChat();
