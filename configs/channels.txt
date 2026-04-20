@@ -2,5 +2,12 @@
 # Channel numbers are assigned in order: first = channel 1, second = channel 2, etc.
 # Lines starting with # are comments
 @networkti
-@thefeedconfig
 @VahidOnline
+@MilitarryWorld
+@Looper_Team
+@Minas_Tirith2024
+@TirexNet
+@Tel_War
+@MatinSenPaii
+@khabarfuri
+@kianmeli1

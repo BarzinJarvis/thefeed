@@ -582,13 +582,7 @@
       box-shadow: 0 1px 2px rgba(0,0,0,.15);
       align-self: flex-start;
       border-bottom-left-radius: 4px;
-      position: relative;
-      animation: msgIn .2s ease-out
-    }
-
-    @keyframes msgIn {
-      from { opacity: 0; transform: translateY(8px) }
-      to { opacity: 1; transform: translateY(0) }
+      position: relative
     }
 
     :root[data-theme="light"] .msg {
@@ -3806,20 +3800,29 @@
     }
 
     // ===== IMAGE LOADING =====
-    var imageLoadingActive = false;
     function loadImage(el, imgId) {
-      if (imageLoadingActive) return;
-      imageLoadingActive = true;
+      if (el.classList.contains('loading')) return;
       el.classList.add('loading');
       el.querySelector('.img-label').textContent = t('loading_image');
 
-      fetch('/api/image/' + imgId)
+      var controller = new AbortController();
+      var fetchTimeout = setTimeout(function() { controller.abort(); }, 60000);
+      var safetyTimeout = setTimeout(function() {
+        el.classList.remove('loading');
+        el.querySelector('.img-label').textContent = t('image_error');
+        setTimeout(function() {
+          el.querySelector('.img-label').textContent = t('click_to_load_image');
+        }, 3000);
+      }, 65000);
+
+      fetch('/api/image/' + imgId, { signal: controller.signal })
         .then(function(r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           return r.blob();
         })
         .then(function(blob) {
-          imageLoadingActive = false;
+          clearTimeout(fetchTimeout);
+          clearTimeout(safetyTimeout);
           var url = URL.createObjectURL(blob);
           var img = document.createElement('img');
           img.className = 'msg-image';
@@ -3828,7 +3831,8 @@
           el.parentNode.replaceChild(img, el);
         })
         .catch(function(err) {
-          imageLoadingActive = false;
+          clearTimeout(fetchTimeout);
+          clearTimeout(safetyTimeout);
           el.classList.remove('loading');
           el.querySelector('.img-label').textContent = t('image_error');
           setTimeout(function() {

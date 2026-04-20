@@ -2129,7 +2129,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(basectx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(basectx, 90*time.Second)
 	defer cancel()
 
 	s.addLog(fmt.Sprintf("Fetching image %d...", id))
