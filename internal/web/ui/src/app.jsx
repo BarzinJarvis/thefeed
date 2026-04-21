@@ -322,6 +322,18 @@ function App() {
     setSidebarOpen(false);
     setMsgSearchActive(false);
     setMsgSearch('');
+    const appEl = document.getElementById('app');
+    if (appEl) appEl.classList.add('chat-open');
+  }, []);
+
+  // Expose openSidebar globally for Android back button
+  useEffect(() => {
+    window.openSidebar = () => {
+      setSidebarOpen(true);
+      const appEl = document.getElementById('app');
+      if (appEl) appEl.classList.remove('chat-open');
+    };
+    return () => { delete window.openSidebar; };
   }, []);
 
   const doRefresh = useCallback(async () => {
@@ -353,7 +365,7 @@ function App() {
   }
 
   return h(Fragment, null,
-    h('div', { class: 'app' },
+    h('div', { id: 'app', class: 'app' + (selectedCh > 0 ? ' chat-open' : '') },
       h('div', { class: 'mobile-overlay' + (sidebarOpen ? ' visible' : ''), onClick: () => setSidebarOpen(false) }),
       h(Sidebar, {
         channels, selectedCh, selectChannel, searchQuery, setSearchQuery,
@@ -536,7 +548,7 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
 
   return h('div', { class: 'chat-area' },
     h('div', { class: 'chat-header' },
-      h('button', { class: 'back-btn', onClick: () => setSidebarOpen(true) },
+      h('button', { class: 'back-btn', onClick: () => { setSidebarOpen(true); const appEl = document.getElementById('app'); if (appEl) appEl.classList.remove('chat-open'); } },
         h('svg', { viewBox: '0 0 24 24' }, h('line', { x1: 19, y1: 12, x2: 5, y2: 12 }), h('polyline', { points: '12 19 5 12 12 5' }))
       ),
       selectedCh > 0 && h('div', { class: 'header-avatar', style: 'background:' + avatarGradient(name) }, avatarLetter(name)),
@@ -1141,7 +1153,11 @@ function ScannerModal({ profiles, closeModal, showToast }) {
   const startScan = async () => {
     if (!targets.trim()) return;
     try {
-      await api.scannerStart({ targets: targets.trim(), rateLimit: 500, timeout: 3000, maxIPs: 1000 });
+      const isPreset = presets.some(p => p.name === targets.trim());
+      const scanReq = isPreset
+        ? { preset: targets.trim(), rateLimit: 500, timeout: 3000, maxIPs: 1000 }
+        : { targets: targets.trim().split(/[\n,]+/).map(s => s.trim()).filter(Boolean), rateLimit: 500, timeout: 3000, maxIPs: 1000 };
+      await api.scannerStart(scanReq);
       setScanState('running');
       timerRef.current = setInterval(async () => {
         try {
@@ -1172,8 +1188,16 @@ function ScannerModal({ profiles, closeModal, showToast }) {
         h('label', { class: 'form-label' }, t('scanner_targets')),
         h('textarea', { class: 'form-input', rows: 3, value: targets, onInput: e => setTargets(e.target.value), placeholder: '1.0.0.0/24\n8.8.4.0/24' }),
       ),
-      presets.length > 0 && h('div', { style: 'margin-bottom:12px;display:flex;flex-wrap:wrap;gap:4px' },
-        presets.map(p => h('button', { key: p.name, class: 'btn btn-sm', onClick: () => setTargets(p.name) }, p.name + ' (' + p.count + ')'))
+      presets.length > 0 && h('div', { style: 'margin-bottom:12px' },
+        h('div', { style: 'font-size:11px;color:var(--text-dim);margin-bottom:6px;font-weight:500' }, t('quick_scan') || 'Quick Scan'),
+        h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px' },
+          presets.map(p => h('button', {
+            key: p.name,
+            class: 'btn btn-primary btn-sm',
+            style: targets.trim() === p.name ? 'box-shadow:0 0 0 2px var(--accent)' : '',
+            onClick: () => setTargets(p.name)
+          }, '🔍 ' + (p.label || p.name) + ' (' + p.count + ' IPs)'))
+        ),
       ),
       h('button', { class: 'btn btn-primary', onClick: startScan }, t('scanner_start')),
       results.length > 0 && h(Fragment, null,
