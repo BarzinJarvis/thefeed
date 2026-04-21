@@ -425,6 +425,43 @@ a:hover { text-decoration: underline; }
   flex: 1; gap: 14px; padding: 40px; color: var(--text-dim);
 }
 .msg-loader .loader-spinner { width: 30px; height: 30px; border-width: 2.5px; }
+.msg-loader-progress {
+  width: 180px; height: 3px; background: rgba(255,255,255,.06); border-radius: 2px;
+  overflow: hidden; margin-top: 4px;
+}
+.msg-loader-progress-fill {
+  height: 100%; width: 35%; background: linear-gradient(90deg, var(--accent), #8b5cf6);
+  border-radius: 2px; animation: chLoad 1.4s ease-in-out infinite;
+}
+.msg-load-error { color: var(--error); }
+
+/* Channel Error Row */
+.ch-error-row {
+  display: flex; align-items: center; gap: 6px; font-size: 11px;
+}
+.ch-error-text { color: var(--error); font-weight: 500; }
+.ch-retry-btn {
+  background: var(--error); color: #fff; border: none; border-radius: 4px;
+  font-size: 10px; padding: 2px 8px; font-weight: 600; cursor: pointer;
+  transition: opacity .2s;
+}
+.ch-retry-btn:hover { opacity: .85; }
+.ch-retry-btn:disabled { opacity: .5; cursor: not-allowed; }
+.ch-item.ch-error .ch-avatar { opacity: .6; }
+
+/* Resolver Setup Modal */
+.setup-info {
+  font-size: 13px; color: var(--text-dim); line-height: 1.6;
+  padding: 8px 0; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+}
+.setup-testing {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 40px 20px; gap: 4px;
+}
+.setup-success, .setup-fail {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  padding: 20px 0;
+}
 
 /* Empty State */
 .empty-state {

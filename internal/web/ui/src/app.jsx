@@ -128,6 +128,8 @@ function App() {
   const [countdown, setCountdown] = useState('');
   const [confirmMsg, setConfirmMsg] = useState(null);
   const [, forceRender] = useState(0);
+  const [channelErrors, setChannelErrors] = useState({});
+  const [retryingChannel, setRetryingChannel] = useState(null);
   const messagesRef = useRef(null);
   const bottomRef = useRef(null);
   const logRef = useRef(null);
@@ -157,6 +159,43 @@ function App() {
     }
   }, []);
 
+  const loadChannelMessages = useCallback(async (chList, index) => {
+    const ch = chList[index];
+    const nm = ch.Name || ch.name || '';
+    channelLoadingMap[nm] = true;
+    forceRender(n => n + 1);
+    try {
+      const mdata = await api.messages(index + 1);
+      const msgs = mdata.messages || [];
+      if (msgs.length > 0) {
+        const lastMsg = msgs[msgs.length - 1];
+        const lastText = (lastMsg.Text || lastMsg.text || '')
+          .replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '')
+          .substring(0, 80);
+        setChannelPreviews(p => ({ ...p, [nm]: lastText }));
+      }
+      const imgIds = [];
+      msgs.forEach(m => {
+        const match = (m.Text || m.text || '').match(/\[IMAGE:(\d+)\]/);
+        if (match) imgIds.push(parseInt(match[1]));
+      });
+      if (imgIds.length > 0) queueImagePrefetch(imgIds);
+      setChannelErrors(prev => { const n = { ...prev }; delete n[nm]; return n; });
+    } catch (e) {
+      setChannelErrors(prev => ({ ...prev, [nm]: true }));
+    }
+    channelLoadingMap[nm] = false;
+    forceRender(n => n + 1);
+  }, []);
+
+  const retryChannel = useCallback(async (chList, nm) => {
+    const idx = chList.findIndex(c => (c.Name || c.name || '') === nm);
+    if (idx < 0) return;
+    setRetryingChannel(nm);
+    await loadChannelMessages(chList, idx);
+    setRetryingChannel(null);
+  }, [loadChannelMessages]);
+
   // Initial load — stays on loader screen until ALL channels are preloaded
   useEffect(() => {
     (async () => {
@@ -173,6 +212,18 @@ function App() {
           setProfiles(profs.profiles || []);
           setActiveProfile(profs.active || null);
         }
+
+        // Check if user has active resolvers — if not, prompt setup
+        try {
+          const resolverData = await api.resolversActive();
+          const activeResolvers = resolverData.resolvers || resolverData || [];
+          if (activeResolvers.length === 0) {
+            setLoading(false);
+            setActiveModal('resolverSetup');
+            return;
+          }
+        } catch {}
+
         // Load channels
         const data = await api.channels();
         const chList = Array.isArray(data) ? data : (data && data.channels ? data.channels : []);
@@ -186,31 +237,13 @@ function App() {
           });
           setPrevMsgIDs(newPrev);
           if (data && data.nextFetch) setNextFetch(data.nextFetch);
-          // Preload ALL channel messages before showing UI
-          const previews = {};
+          // Preload ALL channel messages — show per-channel loading in sidebar
           for (let i = 0; i < chList.length; i++) {
             const ch = chList[i];
             const nm = ch.Name || ch.name || '';
             setPreloadProgress({ current: i + 1, total: chList.length, name: nm });
-            try {
-              const mdata = await api.messages(i + 1);
-              const msgs = mdata.messages || [];
-              if (msgs.length > 0) {
-                const lastMsg = msgs[msgs.length - 1];
-                const lastText = (lastMsg.Text || lastMsg.text || '')
-                  .replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '')
-                  .substring(0, 80);
-                previews[nm] = lastText;
-              }
-              const imgIds = [];
-              msgs.forEach(m => {
-                const match = (m.Text || m.text || '').match(/\[IMAGE:(\d+)\]/);
-                if (match) imgIds.push(parseInt(match[1]));
-              });
-              if (imgIds.length > 0) queueImagePrefetch(imgIds);
-            } catch {}
+            await loadChannelMessages(chList, i);
           }
-          setChannelPreviews(previews);
           setPreloadProgress(null);
         }
       } catch (e) {}
@@ -309,34 +342,42 @@ function App() {
     });
   }, []);
 
+  const [msgLoadError, setMsgLoadError] = useState(false);
+
+  const loadSelectedChannel = useCallback(async (chNum) => {
+    if (chNum <= 0) return;
+    setLoadingMsg(true);
+    setMsgLoadError(false);
+    try {
+      const data = await api.messages(chNum);
+      const msgs = data.messages || [];
+      setMessages(msgs);
+      setGaps(data.gaps || []);
+      const imgIds = [];
+      msgs.forEach(m => {
+        const match = (m.Text || m.text || '').match(/\[IMAGE:(\d+)\]/);
+        if (match) imgIds.push(parseInt(match[1]));
+      });
+      if (imgIds.length > 0) queueImagePrefetch(imgIds);
+      const ch = channels[chNum - 1];
+      if (ch) {
+        const nm = ch.Name || ch.name || '';
+        const lid = ch.LastMsgID || ch.lastMsgID || 0;
+        setPrevMsgIDs(p => ({ ...p, [nm]: lid }));
+        extractPreview(msgs, nm);
+      }
+      scrollToBottom();
+    } catch (e) {
+      setMsgLoadError(true);
+    }
+    setLoadingMsg(false);
+    api.refresh(chNum, true).catch(() => {});
+  }, [channels, extractPreview, scrollToBottom]);
+
   // Load messages when channel selected
   useEffect(() => {
     if (selectedCh <= 0) return;
-    setLoadingMsg(true);
-    (async () => {
-      try {
-        const data = await api.messages(selectedCh);
-        const msgs = data.messages || [];
-        setMessages(msgs);
-        setGaps(data.gaps || []);
-        const imgIds = [];
-        msgs.forEach(m => {
-          const match = (m.Text || m.text || '').match(/\[IMAGE:(\d+)\]/);
-          if (match) imgIds.push(parseInt(match[1]));
-        });
-        if (imgIds.length > 0) queueImagePrefetch(imgIds);
-        const ch = channels[selectedCh - 1];
-        if (ch) {
-          const nm = ch.Name || ch.name || '';
-          const lid = ch.LastMsgID || ch.lastMsgID || 0;
-          setPrevMsgIDs(p => ({ ...p, [nm]: lid }));
-          extractPreview(msgs, nm);
-        }
-        scrollToBottom();
-      } catch (e) {}
-      setLoadingMsg(false);
-      api.refresh(selectedCh, true).catch(() => {});
-    })();
+    loadSelectedChannel(selectedCh);
   }, [selectedCh]);
 
   // Auto-reload messages when SSE update comes
@@ -412,6 +453,7 @@ function App() {
         profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen,
         doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible,
         prevMsgIDs, channelPreviews, channelLoadingMap, preloadProgress,
+        channelErrors, retryChannel, retryingChannel,
       }),
       h(ChatArea, {
         channels, selectedCh, messages, gaps, settings, lang,
@@ -419,7 +461,7 @@ function App() {
         messagesRef, bottomRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive,
         doRefresh, refreshing, hasNewMsgs, openModal, nextFetch,
         logVisible, setLogVisible, logs, forceRender, loadingMsg, logRef,
-        countdown, scrollToBottom,
+        countdown, scrollToBottom, msgLoadError, loadSelectedChannel,
       }),
     ),
     toasts.length > 0 && h('div', { class: 'toast-container' },
@@ -430,13 +472,14 @@ function App() {
     activeModal === 'profileEditor' && h(ProfileEditorModal, { profile: modalData, closeModal, showToast, openModal, setProfiles }),
     activeModal === 'export' && h(ExportModal, { messages, closeModal, showToast, lang }),
     activeModal === 'resolvers' && h(ResolversModal, { closeModal, showToast }),
+    activeModal === 'resolverSetup' && h(ResolverSetupModal, { closeModal, showToast, openModal }),
     activeModal === 'scanner' && h(ScannerModal, { profiles, closeModal, showToast }),
     h(ConfirmDialog, { message: confirmMsg, onResult: handleConfirmResult }),
   );
 }
 
 // ===== SIDEBAR =====
-function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQuery, profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen, doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible, prevMsgIDs, channelPreviews, channelLoadingMap, preloadProgress }) {
+function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQuery, profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen, doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible, prevMsgIDs, channelPreviews, channelLoadingMap, preloadProgress, channelErrors, retryChannel, retryingChannel }) {
   const filtered = useMemo(() => {
     if (!searchQuery) return channels;
     const q = searchQuery.toLowerCase();
@@ -502,9 +545,9 @@ function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQu
         h('p', null, t('no_channels')),
         h('button', { class: 'btn btn-primary', style: 'margin-top:12px', onClick: () => openModal('profiles') }, t('set_up')),
       ),
-      renderChannelSection('', pubs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap),
-      xposts.length > 0 && renderChannelSection(t('x_posts'), xposts, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap),
-      privs.length > 0 && renderChannelSection(t('private'), privs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap),
+      renderChannelSection('', pubs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap, channelErrors, retryChannel, retryingChannel),
+      xposts.length > 0 && renderChannelSection(t('x_posts'), xposts, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap, channelErrors, retryChannel, retryingChannel),
+      privs.length > 0 && renderChannelSection(t('private'), privs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap, channelErrors, retryChannel, retryingChannel),
     ),
     h('div', { class: 'sidebar-footer' },
       h('span', null, 'TELEGRAM: '),
@@ -515,7 +558,7 @@ function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQu
   );
 }
 
-function renderChannelSection(title, items, allChannels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap) {
+function renderChannelSection(title, items, allChannels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap, channelErrors, retryChannel, retryingChannel) {
   if (!items.length) return null;
   return h(Fragment, null,
     title && h('div', { class: 'channel-section-title' }, title),
@@ -530,7 +573,9 @@ function renderChannelSection(title, items, allChannels, selectedCh, selectChann
       const hasNew = prevMsgIDs[nm] > 0 && lid > prevMsgIDs[nm] && !active;
       const preview = channelPreviews[nm] || '';
       const isLoading = channelLoadingMap && channelLoadingMap[nm];
-      return h('div', { key: name, class: 'ch-item' + (active ? ' active' : ''), onClick: () => selectChannel(num) },
+      const hasError = channelErrors && channelErrors[nm];
+      const isRetrying = retryingChannel === nm;
+      return h('div', { key: name, class: 'ch-item' + (active ? ' active' : '') + (hasError ? ' ch-error' : ''), onClick: () => selectChannel(num) },
         h('div', { class: 'ch-avatar', style: 'background:' + avatarGradient(name) }, avatarLetter(name)),
         h('div', { class: 'ch-info' },
           h('div', { class: 'ch-name-row' },
@@ -540,7 +585,13 @@ function renderChannelSection(title, items, allChannels, selectedCh, selectChann
             ),
             hasNew && h('span', { class: 'ch-badge' }, 'NEW'),
           ),
-          h('div', { class: 'ch-preview', dir: 'auto' }, preview || ' '),
+          hasError
+            ? h('div', { class: 'ch-error-row' },
+                h('span', { class: 'ch-error-text' }, t('channel_load_failed')),
+                h('button', { class: 'ch-retry-btn', disabled: isRetrying, onClick: (e) => { e.stopPropagation(); retryChannel(allChannels, nm); } },
+                  isRetrying ? t('loading') : t('retry')),
+              )
+            : h('div', { class: 'ch-preview', dir: 'auto' }, preview || ' '),
         ),
         isLoading && h('div', { class: 'ch-loading-bar' },
           h('div', { class: 'ch-loading-fill' }),
@@ -551,7 +602,7 @@ function renderChannelSection(title, items, allChannels, selectedCh, selectChann
 }
 
 // ===== CHAT AREA =====
-function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSidebarOpen, channelName, showToast, telegramLoggedIn, messagesRef, bottomRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive, doRefresh, refreshing, hasNewMsgs, openModal, nextFetch, logVisible, setLogVisible, logs, forceRender, loadingMsg, logRef, countdown, scrollToBottom }) {
+function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSidebarOpen, channelName, showToast, telegramLoggedIn, messagesRef, bottomRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive, doRefresh, refreshing, hasNewMsgs, openModal, nextFetch, logVisible, setLogVisible, logs, forceRender, loadingMsg, logRef, countdown, scrollToBottom, msgLoadError, loadSelectedChannel }) {
   const name = selectedCh > 0 ? channelName(selectedCh) : 'thefeed';
   const ch = selectedCh > 0 ? channels[selectedCh - 1] : null;
   const canSend = ch && (ch.CanSend || ch.canSend) && telegramLoggedIn;
@@ -626,7 +677,17 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
     loadingMsg ? h('div', { class: 'messages-container', ref: messagesRef },
       h('div', { class: 'msg-loader' },
         h('div', { class: 'loader-spinner' }),
-        h('div', null, t('loading')),
+        h('div', null, t('fetching_channel')),
+        h('div', { class: 'msg-loader-progress' },
+          h('div', { class: 'msg-loader-progress-fill' }),
+        ),
+      ),
+    ) : msgLoadError ? h('div', { class: 'messages-container', ref: messagesRef },
+      h('div', { class: 'msg-loader msg-load-error' },
+        h('svg', { viewBox: '0 0 24 24', width: 36, height: 36, fill: 'none', stroke: 'var(--error)', 'stroke-width': '2' },
+          h('circle', { cx: 12, cy: 12, r: 10 }), h('line', { x1: 12, y1: 8, x2: 12, y2: 12 }), h('line', { x1: 12, y1: 16, x2: '12.01', y2: 16 })),
+        h('div', null, t('channel_load_failed')),
+        h('button', { class: 'btn btn-primary btn-sm', style: 'margin-top:8px', onClick: () => loadSelectedChannel(selectedCh) }, t('retry')),
       ),
     ) : h(MessageList, { messages, gaps, lang, settings, showToast, messagesRef, bottomRef, handleScroll, msgSearch, forceRender }),
     showScroll && h('div', { class: 'scroll-down-btn visible', onClick: doScrollBottom },
@@ -1210,6 +1271,111 @@ function ResolversModal({ closeModal, showToast }) {
         h('textarea', { class: 'form-input', rows: 2, value: addText, onInput: e => setAddText(e.target.value), placeholder: '1.1.1.1\n8.8.8.8' }),
       ),
       h('button', { class: 'btn btn-primary btn-sm', onClick: doAdd, disabled: !addText.trim() }, t('add')),
+    ),
+  );
+}
+
+function ResolverSetupModal({ closeModal, showToast, openModal }) {
+  const [step, setStep] = useState('add');
+  const [addText, setAddText] = useState('8.8.8.8\n1.1.1.1\n9.9.9.9\n208.67.222.222');
+  const [testing, setTesting] = useState(false);
+  const [testDone, setTestDone] = useState(false);
+  const [active, setActive] = useState([]);
+
+  const doAddAndTest = async () => {
+    if (!addText.trim()) return;
+    const rs = addText.trim().split(/[\n,]+/).map(s => s.trim()).filter(Boolean)
+      .map(r => r.includes(':') ? r : r + ':53');
+    setTesting(true);
+    setStep('testing');
+    try {
+      await api.addToBank(rs);
+      await api.rescan();
+      const pollActive = async (attempts) => {
+        for (let i = 0; i < attempts; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const data = await api.resolversActive();
+            const list = data.resolvers || data || [];
+            if (list.length > 0) {
+              setActive(list);
+              setTestDone(true);
+              setTesting(false);
+              setStep('done');
+              return;
+            }
+          } catch {}
+        }
+        setTesting(false);
+        setTestDone(true);
+        setStep('done');
+      };
+      pollActive(20);
+    } catch (e) {
+      showToast(e.message, 'error');
+      setTesting(false);
+      setStep('add');
+    }
+  };
+
+  const doFinish = () => {
+    closeModal();
+    window.location.reload();
+  };
+
+  return h(ModalShell, { title: t('resolver_setup_title'), onClose: closeModal },
+    step === 'add' && h(Fragment, null,
+      h('div', { class: 'setup-info' }, t('resolver_setup_desc')),
+      h('div', { class: 'form-group', style: 'margin-top:12px' },
+        h('label', { class: 'form-label' }, t('add_resolvers')),
+        h('textarea', { class: 'form-input', rows: 4, value: addText, onInput: e => setAddText(e.target.value), placeholder: '8.8.8.8\n1.1.1.1' }),
+      ),
+      h('button', { class: 'btn btn-primary', style: 'width:100%;margin-top:8px', onClick: doAddAndTest, disabled: !addText.trim() }, t('resolver_setup_test')),
+      h('div', { style: 'text-align:center;margin-top:12px' },
+        h('button', { class: 'btn btn-sm', onClick: () => { closeModal(); openModal('scanner'); } }, t('scanner_find_resolvers')),
+      ),
+    ),
+    step === 'testing' && h('div', { class: 'setup-testing' },
+      h('div', { class: 'loader-spinner' }),
+      h('div', { style: 'margin-top:16px;font-weight:500' }, t('resolver_setup_testing')),
+      h('div', { class: 'msg-loader-progress', style: 'width:200px;margin-top:12px' },
+        h('div', { class: 'msg-loader-progress-fill' }),
+      ),
+      h('div', { style: 'font-size:12px;color:var(--text-dim);margin-top:8px' }, t('resolver_setup_testing_hint')),
+    ),
+    step === 'done' && h(Fragment, null,
+      active.length > 0
+        ? h(Fragment, null,
+            h('div', { class: 'setup-success' },
+              h('svg', { viewBox: '0 0 24 24', width: 40, height: 40, fill: 'none', stroke: 'var(--success)', 'stroke-width': '2' },
+                h('path', { d: 'M22 11.08V12a10 10 0 11-5.93-9.14' }), h('polyline', { points: '22 4 12 14.01 9 11.01' })),
+              h('div', { style: 'margin-top:10px;font-weight:600' }, t('resolver_setup_found').replace('{n}', active.length)),
+            ),
+            h('div', { class: 'resolver-list', style: 'margin-top:12px;max-height:150px;overflow-y:auto' },
+              active.map((r, i) => {
+                const addr = r.addr || r.Addr || r;
+                const score = r.score || r.Score || 0;
+                return h('div', { key: addr, class: 'resolver-item compact' },
+                  h('span', { class: 'resolver-num' }, i + 1),
+                  h('span', { class: 'resolver-addr' }, addr),
+                  h('span', { class: 'resolver-score-badge good' }, score.toFixed ? score.toFixed(1) : score),
+                );
+              }),
+            ),
+            h('button', { class: 'btn btn-primary', style: 'width:100%;margin-top:16px', onClick: doFinish }, t('resolver_setup_continue')),
+          )
+        : h(Fragment, null,
+            h('div', { class: 'setup-fail' },
+              h('svg', { viewBox: '0 0 24 24', width: 40, height: 40, fill: 'none', stroke: 'var(--error)', 'stroke-width': '2' },
+                h('circle', { cx: 12, cy: 12, r: 10 }), h('line', { x1: 15, y1: 9, x2: 9, y2: 15 }), h('line', { x1: 9, y1: 9, x2: 15, y2: 15 })),
+              h('div', { style: 'margin-top:10px;font-weight:600' }, t('resolver_setup_none_found')),
+              h('div', { style: 'font-size:12px;color:var(--text-dim);margin-top:6px' }, t('resolver_setup_none_hint')),
+            ),
+            h('div', { style: 'display:flex;gap:8px;margin-top:16px' },
+              h('button', { class: 'btn', style: 'flex:1', onClick: () => setStep('add') }, t('retry')),
+              h('button', { class: 'btn btn-primary', style: 'flex:1', onClick: () => { closeModal(); openModal('scanner'); } }, t('scanner_find_resolvers')),
+            ),
+          ),
     ),
   );
 }
