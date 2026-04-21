@@ -97,7 +97,7 @@ function App() {
   const [loadingMsg, setLoadingMsg] = useState(false);
   const [channelPreviews, setChannelPreviews] = useState({});
   const [preloadProgress, setPreloadProgress] = useState(null);
-  const [channelLoadingMap, setChannelLoadingMap] = useState({});
+  const [channelLoadingMap] = useState({});
   const [countdown, setCountdown] = useState('');
   const [, forceRender] = useState(0);
   const messagesRef = useRef(null);
@@ -129,39 +129,7 @@ function App() {
     }
   }, []);
 
-  // Preload all channel messages
-  const preloadAllChannels = useCallback(async (chList) => {
-    const previews = {};
-    for (let i = 0; i < chList.length; i++) {
-      const ch = chList[i];
-      const nm = ch.Name || ch.name || '';
-      setPreloadProgress({ current: i + 1, total: chList.length, name: nm });
-      setChannelLoadingMap(m => ({ ...m, [nm]: true }));
-      try {
-        const data = await api.messages(i + 1);
-        const msgs = data.messages || [];
-        if (msgs.length > 0) {
-          const lastMsg = msgs[msgs.length - 1];
-          const lastText = (lastMsg.Text || lastMsg.text || '')
-            .replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '')
-            .substring(0, 80);
-          previews[nm] = lastText;
-        }
-        const imgIds = [];
-        msgs.forEach(m => {
-          const match = (m.Text || m.text || '').match(/\[IMAGE:(\d+)\]/);
-          if (match) imgIds.push(parseInt(match[1]));
-        });
-        if (imgIds.length > 0) queueImagePrefetch(imgIds);
-      } catch {}
-      setChannelLoadingMap(m => ({ ...m, [nm]: false }));
-    }
-    setChannelPreviews(p => ({ ...p, ...previews }));
-    setPreloadProgress(null);
-    showToast(t('preload_done'), 'success');
-  }, [showToast]);
-
-  // Initial load
+  // Initial load — stays on loader screen until ALL channels are preloaded
   useEffect(() => {
     (async () => {
       try {
@@ -190,15 +158,35 @@ function App() {
           });
           setPrevMsgIDs(newPrev);
           if (data && data.nextFetch) setNextFetch(data.nextFetch);
-          setLoading(false);
-          // Auto-preload all channels
-          preloadAllChannels(chList);
-        } else {
-          setLoading(false);
+          // Preload ALL channel messages before showing UI
+          const previews = {};
+          for (let i = 0; i < chList.length; i++) {
+            const ch = chList[i];
+            const nm = ch.Name || ch.name || '';
+            setPreloadProgress({ current: i + 1, total: chList.length, name: nm });
+            try {
+              const mdata = await api.messages(i + 1);
+              const msgs = mdata.messages || [];
+              if (msgs.length > 0) {
+                const lastMsg = msgs[msgs.length - 1];
+                const lastText = (lastMsg.Text || lastMsg.text || '')
+                  .replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '')
+                  .substring(0, 80);
+                previews[nm] = lastText;
+              }
+              const imgIds = [];
+              msgs.forEach(m => {
+                const match = (m.Text || m.text || '').match(/\[IMAGE:(\d+)\]/);
+                if (match) imgIds.push(parseInt(match[1]));
+              });
+              if (imgIds.length > 0) queueImagePrefetch(imgIds);
+            } catch {}
+          }
+          setChannelPreviews(previews);
+          setPreloadProgress(null);
         }
-      } catch (e) {
-        setLoading(false);
-      }
+      } catch (e) {}
+      setLoading(false);
     })();
   }, []);
 
@@ -353,7 +341,14 @@ function App() {
   if (loading) {
     return h('div', { class: 'app-loader' },
       h('div', { class: 'loader-spinner' }),
-      h('div', { class: 'loader-text' }, t('loading')),
+      preloadProgress
+        ? h(Fragment, null,
+            h('div', { class: 'loader-text' }, t('preload_channel').replace('{name}', preloadProgress.name).replace('{n}', preloadProgress.current).replace('{total}', preloadProgress.total)),
+            h('div', { class: 'loader-progress' },
+              h('div', { class: 'loader-progress-fill', style: 'width:' + Math.round(preloadProgress.current / preloadProgress.total * 100) + '%' }),
+            ),
+          )
+        : h('div', { class: 'loader-text' }, t('loading')),
     );
   }
 
