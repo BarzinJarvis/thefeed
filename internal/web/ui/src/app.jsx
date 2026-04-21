@@ -124,12 +124,12 @@ function App() {
   const [loadingMsg, setLoadingMsg] = useState(false);
   const [channelPreviews, setChannelPreviews] = useState({});
   const [preloadProgress, setPreloadProgress] = useState(null);
-  const [channelLoadingMap] = useState({});
+  const [channelLoadingMap, setChannelLoadingMap] = useState({});
   const [countdown, setCountdown] = useState('');
   const [confirmMsg, setConfirmMsg] = useState(null);
-  const [, forceRender] = useState(0);
   const [channelErrors, setChannelErrors] = useState({});
   const [retryingChannel, setRetryingChannel] = useState(null);
+  const [, forceRender] = useState(0);
   const messagesRef = useRef(null);
   const bottomRef = useRef(null);
   const logRef = useRef(null);
@@ -162,8 +162,7 @@ function App() {
   const loadChannelMessages = useCallback(async (chList, index) => {
     const ch = chList[index];
     const nm = ch.Name || ch.name || '';
-    channelLoadingMap[nm] = true;
-    forceRender(n => n + 1);
+    setChannelLoadingMap(prev => ({ ...prev, [nm]: true }));
     try {
       const mdata = await api.messages(index + 1);
       const msgs = mdata.messages || [];
@@ -184,8 +183,7 @@ function App() {
     } catch (e) {
       setChannelErrors(prev => ({ ...prev, [nm]: true }));
     }
-    channelLoadingMap[nm] = false;
-    forceRender(n => n + 1);
+    setChannelLoadingMap(prev => ({ ...prev, [nm]: false }));
   }, []);
 
   const retryChannel = useCallback(async (chList, nm) => {
@@ -348,6 +346,8 @@ function App() {
   }, []);
 
   const [msgLoadError, setMsgLoadError] = useState(false);
+  const channelsRef = useRef([]);
+  channelsRef.current = channels;
 
   const loadSelectedChannel = useCallback(async (chNum) => {
     if (chNum <= 0) return;
@@ -364,7 +364,7 @@ function App() {
         if (match) imgIds.push(parseInt(match[1]));
       });
       if (imgIds.length > 0) queueImagePrefetch(imgIds);
-      const ch = channels[chNum - 1];
+      const ch = channelsRef.current[chNum - 1];
       if (ch) {
         const nm = ch.Name || ch.name || '';
         const lid = ch.LastMsgID || ch.lastMsgID || 0;
@@ -377,13 +377,13 @@ function App() {
     }
     setLoadingMsg(false);
     api.refresh(chNum, true).catch(() => {});
-  }, [channels, extractPreview, scrollToBottom]);
+  }, [extractPreview, scrollToBottom]);
 
   // Load messages when channel selected
   useEffect(() => {
     if (selectedCh <= 0) return;
     loadSelectedChannel(selectedCh);
-  }, [selectedCh, loadSelectedChannel]);
+  }, [selectedCh]);
 
   // Auto-reload messages when SSE update comes
   useEffect(() => {
