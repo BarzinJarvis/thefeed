@@ -237,7 +237,9 @@ function App() {
           });
           setPrevMsgIDs(newPrev);
           if (data && data.nextFetch) setNextFetch(data.nextFetch);
-          // Preload ALL channel messages — show per-channel loading in sidebar
+          // Show main UI immediately so user sees sidebar with per-channel loaders
+          setLoading(false);
+          // Preload ALL channel messages in background
           for (let i = 0; i < chList.length; i++) {
             const ch = chList[i];
             const nm = ch.Name || ch.name || '';
@@ -245,9 +247,12 @@ function App() {
             await loadChannelMessages(chList, i);
           }
           setPreloadProgress(null);
+        } else {
+          setLoading(false);
         }
-      } catch (e) {}
-      setLoading(false);
+      } catch (e) {
+        setLoading(false);
+      }
     })();
   }, []);
 
@@ -378,7 +383,7 @@ function App() {
   useEffect(() => {
     if (selectedCh <= 0) return;
     loadSelectedChannel(selectedCh);
-  }, [selectedCh]);
+  }, [selectedCh, loadSelectedChannel]);
 
   // Auto-reload messages when SSE update comes
   useEffect(() => {
