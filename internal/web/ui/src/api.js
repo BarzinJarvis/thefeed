@@ -1,6 +1,10 @@
 export async function fetchJSON(url, opts) {
   const r = await fetch(url, opts);
-  if (!r.ok) throw new Error('HTTP ' + r.status);
+  if (!r.ok) {
+    let msg = 'HTTP ' + r.status;
+    try { const txt = await r.text(); if (txt) msg += ': ' + txt.trim(); } catch {}
+    throw new Error(msg);
+  }
   return r.json();
 }
 

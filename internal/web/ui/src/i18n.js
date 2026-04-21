@@ -74,6 +74,14 @@ const strings = {
     rescan_prompt_title: 'اسکن مجدد ریزالورها', rescan_prompt_msg: 'آیا ریزالورها مجدد اسکن شوند؟',
     rescan_prompt_yes: 'بله، اسکن', rescan_prompt_skip: 'رد کردن',
     timeout: 'زمان انتظار',
+    preloading: 'در حال بارگذاری کانال‌ها...',
+    preload_channel: 'بارگذاری {name} ({n}/{total})',
+    preload_done: 'همه کانال‌ها بارگذاری شدند',
+    update_success: 'بروزرسانی موفق',
+    update_failed: 'خطا در بروزرسانی',
+    new_message_from: 'پیام جدید از {name}',
+    next_update_in: 'بروزرسانی بعدی: {t}',
+    enable_notifications: 'فعال‌سازی اعلان‌ها',
   },
   en: {
     search: 'Search', settings: 'Settings', profiles: 'Profiles', close: 'Close',
@@ -150,6 +158,14 @@ const strings = {
     rescan_prompt_title: 'Rescan Resolvers', rescan_prompt_msg: 'Rescan resolvers?',
     rescan_prompt_yes: 'Yes, scan', rescan_prompt_skip: 'Skip',
     timeout: 'Timeout',
+    preloading: 'Loading channels...',
+    preload_channel: 'Loading {name} ({n}/{total})',
+    preload_done: 'All channels loaded',
+    update_success: 'Update successful',
+    update_failed: 'Update failed',
+    new_message_from: 'New message from {name}',
+    next_update_in: 'Next update: {t}',
+    enable_notifications: 'Enable Notifications',
   }
 };
 

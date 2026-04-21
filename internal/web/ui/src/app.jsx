@@ -35,6 +35,40 @@ async function processImageQueue() {
   imageFetching = false;
 }
 
+// ===== NOTIFICATION SOUND =====
+let audioCtx = null;
+function playNotifSound() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+    osc.frequency.setValueAtTime(1100, audioCtx.currentTime + 0.08);
+    osc.frequency.setValueAtTime(880, audioCtx.currentTime + 0.16);
+    gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+    osc.start(audioCtx.currentTime);
+    osc.stop(audioCtx.currentTime + 0.3);
+  } catch {}
+}
+
+function showBrowserNotification(title, body) {
+  try {
+    if (Notification.permission === 'granted' && document.hidden) {
+      new Notification(title, { body, icon: '/static/icon.png', tag: 'thefeed-msg' });
+    }
+  } catch {}
+}
+
+function requestNotifPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
 // ===== MAIN APP =====
 function App() {
   const [configured, setConfigured] = useState(false);
@@ -62,22 +96,70 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [loadingMsg, setLoadingMsg] = useState(false);
   const [channelPreviews, setChannelPreviews] = useState({});
+  const [preloadProgress, setPreloadProgress] = useState(null);
+  const [channelLoadingMap, setChannelLoadingMap] = useState({});
+  const [countdown, setCountdown] = useState('');
   const [, forceRender] = useState(0);
   const messagesRef = useRef(null);
+  const bottomRef = useRef(null);
   const logRef = useRef(null);
   const sseRef = useRef(null);
+  const lastRefreshRef = useRef(Date.now());
+  const refreshIntervalRef = useRef(60);
 
   const lang = settings.lang || 'fa';
   setLang(lang);
 
-  const showToast = useCallback((msg) => {
+  const showToast = useCallback((msg, type) => {
     const id = Date.now();
-    setToasts(ts => [...ts, { id, msg }]);
+    setToasts(ts => [...ts, { id, msg, type }]);
     setTimeout(() => setToasts(ts => ts.filter(t => t.id !== id)), 3000);
   }, []);
 
   const openModal = useCallback((name, data) => { setActiveModal(name); setModalData(data); }, []);
   const closeModal = useCallback(() => { setActiveModal(null); setModalData(null); }, []);
+
+  const extractPreview = useCallback((msgs, chName) => {
+    if (msgs.length > 0) {
+      const lastMsg = msgs[msgs.length - 1];
+      const lastText = (lastMsg.Text || lastMsg.text || '')
+        .replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '')
+        .substring(0, 80);
+      setChannelPreviews(p => ({ ...p, [chName]: lastText }));
+    }
+  }, []);
+
+  // Preload all channel messages
+  const preloadAllChannels = useCallback(async (chList) => {
+    const previews = {};
+    for (let i = 0; i < chList.length; i++) {
+      const ch = chList[i];
+      const nm = ch.Name || ch.name || '';
+      setPreloadProgress({ current: i + 1, total: chList.length, name: nm });
+      setChannelLoadingMap(m => ({ ...m, [nm]: true }));
+      try {
+        const data = await api.messages(i + 1);
+        const msgs = data.messages || [];
+        if (msgs.length > 0) {
+          const lastMsg = msgs[msgs.length - 1];
+          const lastText = (lastMsg.Text || lastMsg.text || '')
+            .replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '')
+            .substring(0, 80);
+          previews[nm] = lastText;
+        }
+        const imgIds = [];
+        msgs.forEach(m => {
+          const match = (m.Text || m.text || '').match(/\[IMAGE:(\d+)\]/);
+          if (match) imgIds.push(parseInt(match[1]));
+        });
+        if (imgIds.length > 0) queueImagePrefetch(imgIds);
+      } catch {}
+      setChannelLoadingMap(m => ({ ...m, [nm]: false }));
+    }
+    setChannelPreviews(p => ({ ...p, ...previews }));
+    setPreloadProgress(null);
+    showToast(t('preload_done'), 'success');
+  }, [showToast]);
 
   // Initial load
   useEffect(() => {
@@ -95,8 +177,28 @@ function App() {
           setProfiles(profs.profiles || []);
           setActiveProfile(profs.active || null);
         }
-      } catch (e) {}
-      setLoading(false);
+        // Load channels
+        const data = await api.channels();
+        const chList = Array.isArray(data) ? data : (data && data.channels ? data.channels : []);
+        if (chList.length > 0) {
+          setChannels(chList);
+          const newPrev = {};
+          chList.forEach(ch => {
+            const nm = ch.Name || ch.name || '';
+            const lid = ch.LastMsgID || ch.lastMsgID || 0;
+            newPrev[nm] = lid;
+          });
+          setPrevMsgIDs(newPrev);
+          if (data && data.nextFetch) setNextFetch(data.nextFetch);
+          setLoading(false);
+          // Auto-preload all channels
+          preloadAllChannels(chList);
+        } else {
+          setLoading(false);
+        }
+      } catch (e) {
+        setLoading(false);
+      }
     })();
   }, []);
 
@@ -109,14 +211,31 @@ function App() {
       });
     };
     const handleUpdate = (data) => {
-      loadChannels();
+      lastRefreshRef.current = Date.now();
+      loadChannels(true);
     };
     sseRef.current = connectSSE(handleLog, handleUpdate);
     return () => { if (sseRef.current) sseRef.current.close(); };
   }, []);
 
+  // Countdown timer
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - lastRefreshRef.current) / 1000);
+      const remaining = Math.max(0, refreshIntervalRef.current - elapsed);
+      if (remaining > 0) {
+        const m = Math.floor(remaining / 60);
+        const s = remaining % 60;
+        setCountdown(m > 0 ? m + ':' + String(s).padStart(2, '0') : s + 's');
+      } else {
+        setCountdown('...');
+      }
+    }, 1000);
+    return () => clearInterval(iv);
+  }, []);
+
   // Load channels
-  const loadChannels = useCallback(async () => {
+  const loadChannels = useCallback(async (fromSSE) => {
     try {
       const data = await api.channels();
       const chList = Array.isArray(data) ? data : (data && data.channels ? data.channels : []);
@@ -128,24 +247,37 @@ function App() {
           const nm = ch.Name || ch.name || '';
           const lid = ch.LastMsgID || ch.lastMsgID || 0;
           newPrev[nm] = lid;
-          if (prevMsgIDs[nm] && lid > prevMsgIDs[nm]) hasNew = true;
+          if (prevMsgIDs[nm] && lid > prevMsgIDs[nm]) {
+            hasNew = true;
+            if (fromSSE) {
+              playNotifSound();
+              showBrowserNotification('thefeed', t('new_message_from').replace('{name}', nm));
+            }
+          }
         });
         setPrevMsgIDs(p => ({ ...p, ...newPrev }));
         setHasNewMsgs(hasNew);
-        if (data && data.nextFetch) setNextFetch(data.nextFetch);
+        if (data && data.nextFetch) {
+          setNextFetch(data.nextFetch);
+          const match = String(data.nextFetch).match(/(\d+)/);
+          if (match) refreshIntervalRef.current = parseInt(match[0]) * 60;
+        }
+        if (fromSSE) {
+          showToast(t('update_success'), 'success');
+        }
       }
-    } catch (e) {}
+    } catch (e) {
+      if (fromSSE) showToast(t('update_failed'), 'error');
+    }
   }, [prevMsgIDs]);
-
-  useEffect(() => { loadChannels(); }, []);
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
       setTimeout(() => {
-        if (messagesRef.current) {
-          messagesRef.current.scrollTop = messagesRef.current.scrollHeight + 1000;
+        if (bottomRef.current) {
+          bottomRef.current.scrollIntoView({ behavior: 'auto' });
         }
-      }, 80);
+      }, 100);
     });
   }, []);
 
@@ -170,11 +302,7 @@ function App() {
           const nm = ch.Name || ch.name || '';
           const lid = ch.LastMsgID || ch.lastMsgID || 0;
           setPrevMsgIDs(p => ({ ...p, [nm]: lid }));
-          if (msgs.length > 0) {
-            const lastMsg = msgs[msgs.length - 1];
-            const lastText = (lastMsg.Text || lastMsg.text || '').replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '').substring(0, 80);
-            setChannelPreviews(p => ({ ...p, [nm]: lastText }));
-          }
+          extractPreview(msgs, nm);
         }
         scrollToBottom();
       } catch (e) {}
@@ -193,11 +321,8 @@ function App() {
             setMessages(data.messages);
             setGaps(data.gaps || []);
             const nm = ch.Name || ch.name || '';
-            if (data.messages.length > 0) {
-              const lastMsg = data.messages[data.messages.length - 1];
-              const lastText = (lastMsg.Text || lastMsg.text || '').replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '').substring(0, 80);
-              setChannelPreviews(p => ({ ...p, [nm]: lastText }));
-            }
+            extractPreview(data.messages, nm);
+            scrollToBottom();
           }
         }).catch(() => {});
       }
@@ -213,7 +338,10 @@ function App() {
 
   const doRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await api.refresh(); } catch (e) {}
+    try {
+      await api.refresh();
+      lastRefreshRef.current = Date.now();
+    } catch (e) {}
     setTimeout(() => setRefreshing(false), 2000);
   }, []);
 
@@ -236,18 +364,19 @@ function App() {
         channels, selectedCh, selectChannel, searchQuery, setSearchQuery,
         profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen,
         doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible,
-        prevMsgIDs, channelPreviews,
+        prevMsgIDs, channelPreviews, channelLoadingMap, preloadProgress,
       }),
       h(ChatArea, {
         channels, selectedCh, messages, gaps, settings, lang,
         setSidebarOpen, channelName, showToast, telegramLoggedIn,
-        messagesRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive,
+        messagesRef, bottomRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive,
         doRefresh, refreshing, hasNewMsgs, openModal, nextFetch,
         logVisible, setLogVisible, logs, forceRender, loadingMsg, logRef,
+        countdown, scrollToBottom,
       }),
     ),
     toasts.length > 0 && h('div', { class: 'toast-container' },
-      toasts.map(t => h('div', { key: t.id, class: 'toast' }, t.msg))
+      toasts.map(t => h('div', { key: t.id, class: 'toast' + (t.type === 'success' ? ' toast-success' : t.type === 'error' ? ' toast-error' : '') }, t.msg))
     ),
     activeModal === 'settings' && h(SettingsModal, { settings, setSettings, closeModal, showToast }),
     activeModal === 'profiles' && h(ProfilesModal, { profiles, setProfiles, activeProfile, setActiveProfile, closeModal, showToast, openModal }),
@@ -259,7 +388,7 @@ function App() {
 }
 
 // ===== SIDEBAR =====
-function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQuery, profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen, doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible, prevMsgIDs, channelPreviews }) {
+function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQuery, profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen, doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible, prevMsgIDs, channelPreviews, channelLoadingMap, preloadProgress }) {
   const filtered = useMemo(() => {
     if (!searchQuery) return channels;
     const q = searchQuery.toLowerCase();
@@ -314,14 +443,20 @@ function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQu
         t('sidebar_resolvers'),
       ),
     ),
+    preloadProgress && h('div', { class: 'preload-bar' },
+      h('div', { class: 'preload-text' }, t('preload_channel').replace('{name}', preloadProgress.name).replace('{n}', preloadProgress.current).replace('{total}', preloadProgress.total)),
+      h('div', { class: 'progress-bar' },
+        h('div', { class: 'progress-fill', style: 'width:' + Math.round(preloadProgress.current / preloadProgress.total * 100) + '%' }),
+      ),
+    ),
     h('div', { class: 'channel-list' },
       !channels.length && h('div', { class: 'empty-state', style: 'padding:20px' },
         h('p', null, t('no_channels')),
         h('button', { class: 'btn btn-primary', style: 'margin-top:12px', onClick: () => openModal('profiles') }, t('set_up')),
       ),
-      renderChannelSection('', pubs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews),
-      xposts.length > 0 && renderChannelSection(t('x_posts'), xposts, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews),
-      privs.length > 0 && renderChannelSection(t('private'), privs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews),
+      renderChannelSection('', pubs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap),
+      xposts.length > 0 && renderChannelSection(t('x_posts'), xposts, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap),
+      privs.length > 0 && renderChannelSection(t('private'), privs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap),
     ),
     h('div', { class: 'sidebar-footer' },
       h('span', null, 'TELEGRAM: '),
@@ -332,7 +467,7 @@ function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQu
   );
 }
 
-function renderChannelSection(title, items, allChannels, selectedCh, selectChannel, prevMsgIDs, channelPreviews) {
+function renderChannelSection(title, items, allChannels, selectedCh, selectChannel, prevMsgIDs, channelPreviews, channelLoadingMap) {
   if (!items.length) return null;
   return h(Fragment, null,
     title && h('div', { class: 'channel-section-title' }, title),
@@ -346,6 +481,7 @@ function renderChannelSection(title, items, allChannels, selectedCh, selectChann
       const nm = ch.Name || ch.name || '';
       const hasNew = prevMsgIDs[nm] > 0 && lid > prevMsgIDs[nm] && !active;
       const preview = channelPreviews[nm] || '';
+      const isLoading = channelLoadingMap && channelLoadingMap[nm];
       return h('div', { key: name, class: 'ch-item' + (active ? ' active' : ''), onClick: () => selectChannel(num) },
         h('div', { class: 'ch-avatar', style: 'background:' + avatarGradient(name) }, avatarLetter(name)),
         h('div', { class: 'ch-info' },
@@ -358,13 +494,16 @@ function renderChannelSection(title, items, allChannels, selectedCh, selectChann
           ),
           h('div', { class: 'ch-preview', dir: 'auto' }, preview || ' '),
         ),
+        isLoading && h('div', { class: 'ch-loading-bar' },
+          h('div', { class: 'ch-loading-fill' }),
+        ),
       );
     }),
   );
 }
 
 // ===== CHAT AREA =====
-function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSidebarOpen, channelName, showToast, telegramLoggedIn, messagesRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive, doRefresh, refreshing, hasNewMsgs, openModal, nextFetch, logVisible, setLogVisible, logs, forceRender, loadingMsg, logRef }) {
+function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSidebarOpen, channelName, showToast, telegramLoggedIn, messagesRef, bottomRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive, doRefresh, refreshing, hasNewMsgs, openModal, nextFetch, logVisible, setLogVisible, logs, forceRender, loadingMsg, logRef, countdown, scrollToBottom }) {
   const name = selectedCh > 0 ? channelName(selectedCh) : 'thefeed';
   const ch = selectedCh > 0 ? channels[selectedCh - 1] : null;
   const canSend = ch && (ch.CanSend || ch.canSend) && telegramLoggedIn;
@@ -377,9 +516,9 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
     setShowScroll(el.scrollHeight - el.scrollTop - el.clientHeight > 150);
   }, []);
 
-  const scrollToBottom = useCallback(() => {
-    if (messagesRef.current) {
-      messagesRef.current.scrollTop = messagesRef.current.scrollHeight + 1000;
+  const doScrollBottom = useCallback(() => {
+    if (bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: 'auto' });
     }
     setShowScroll(false);
   }, []);
@@ -408,9 +547,9 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
       selectedCh > 0 && h('div', { class: 'header-avatar', style: 'background:' + avatarGradient(name) }, avatarLetter(name)),
       h('div', { class: 'header-info' },
         h('div', { class: 'header-name' }, name),
+        countdown && h('div', { class: 'header-sub' }, t('next_update_in').replace('{t}', countdown)),
       ),
       h('div', { class: 'header-actions' },
-        nextFetch && h('span', { class: 'header-timer' }, nextFetch),
         h('button', { class: 'icon-btn' + (msgSearchActive ? ' active' : ''), onClick: () => setMsgSearchActive(v => !v) },
           h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, h('circle', { cx: 11, cy: 11, r: 8 }), h('line', { x1: 21, y1: 21, x2: '16.65', y2: '16.65' }))
         ),
@@ -441,8 +580,8 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
         h('div', { class: 'loader-spinner' }),
         h('div', null, t('loading')),
       ),
-    ) : h(MessageList, { messages, gaps, lang, settings, showToast, messagesRef, handleScroll, msgSearch, forceRender }),
-    showScroll && h('div', { class: 'scroll-down-btn visible', onClick: scrollToBottom },
+    ) : h(MessageList, { messages, gaps, lang, settings, showToast, messagesRef, bottomRef, handleScroll, msgSearch, forceRender }),
+    showScroll && h('div', { class: 'scroll-down-btn visible', onClick: doScrollBottom },
       h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, h('polyline', { points: '6 9 12 15 18 9' }))
     ),
     canSend && h('div', { class: 'send-panel visible' },
@@ -458,7 +597,7 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
 }
 
 // ===== MESSAGE LIST =====
-function MessageList({ messages, gaps, lang, settings, showToast, messagesRef, handleScroll, msgSearch, forceRender }) {
+function MessageList({ messages, gaps, lang, settings, showToast, messagesRef, bottomRef, handleScroll, msgSearch, forceRender }) {
   if (!messages || !messages.length) {
     return h('div', { class: 'messages-container', ref: messagesRef }, h('div', { class: 'empty-state' }, h('p', null, t('no_messages')), h('p', { style: 'font-size:12px;opacity:.6;margin-top:6px' }, t('no_messages_hint'))));
   }
@@ -503,6 +642,7 @@ function MessageList({ messages, gaps, lang, settings, showToast, messagesRef, h
       els.push(h(Message, { key: id, msg, text, timeStr, id, msgByID, showToast, lang, msgSearch, forceRender }));
       return els;
     }),
+    h('div', { ref: bottomRef, class: 'scroll-anchor' }),
   );
 }
 
@@ -725,6 +865,10 @@ function SettingsModal({ settings, setSettings, closeModal, showToast }) {
       ),
     ),
     h('div', { class: 'form-group' },
+      h('label', { class: 'form-label' }, t('notifications')),
+      h('button', { class: 'btn btn-sm', onClick: requestNotifPermission }, t('enable_notifications')),
+    ),
+    h('div', { class: 'form-group' },
       h('label', { class: 'form-label' }, t('debug_mode')),
       h('div', { class: 'toggle-group' },
         h('button', { class: 'toggle-btn' + (debug ? ' active' : ''), onClick: () => { setDebug(true); save('debug', true); } }, t('yes')),
@@ -743,6 +887,7 @@ function SettingsModal({ settings, setSettings, closeModal, showToast }) {
 function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile, closeModal, showToast, openModal }) {
   const [importUri, setImportUri] = useState('');
   const [importErr, setImportErr] = useState('');
+  const [importing, setImporting] = useState(false);
 
   const doSwitch = async (id) => {
     try {
@@ -767,6 +912,7 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
     const uri = importUri.trim();
     if (!uri) return;
     if (!uri.startsWith('thefeed://')) { setImportErr(t('invalid_uri')); return; }
+    setImporting(true);
     try {
       const body = uri.substring('thefeed://'.length);
       const qIdx = body.indexOf('?');
@@ -777,21 +923,35 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
       const key = decodeURIComponent(parts[1] || '');
       let resolvers = [];
       params.split('&').forEach(kv => {
-        const p = kv.split('=');
-        if (p[0] === 'r' && p[1]) resolvers = decodeURIComponent(p[1]).split(',').filter(Boolean);
+        const [k, v] = kv.split('=');
+        if (k === 'r' && v) resolvers = decodeURIComponent(v).split(',').filter(Boolean);
       });
-      if (!domain || !key) { setImportErr(t('uri_missing')); return; }
-      if (!resolvers.length) resolvers = ['8.8.8.8', '1.1.1.1'];
-      if (resolvers.length > 0) {
-        await api.addToBank(resolvers);
-      }
-      const profile = { id: '', nickname: domain, config: { domain, key, queryMode: 'single', rateLimit: 6 } };
+      if (!domain || !key) { setImportErr(t('uri_missing')); setImporting(false); return; }
+      // Normalize resolver addresses — add :53 if no port
+      resolvers = resolvers.map(r => r.includes(':') ? r : r + ':53');
+      if (!resolvers.length) resolvers = ['8.8.8.8:53', '1.1.1.1:53'];
+      // Add resolvers to bank first
+      try { await api.addToBank(resolvers); } catch (e) { /* bank add is best-effort */ }
+      // Create the profile
+      const profile = {
+        id: '',
+        nickname: domain,
+        config: {
+          domain: domain,
+          key: key,
+          queryMode: 'single',
+          rateLimit: 6,
+        }
+      };
       await api.saveProfile({ action: 'create', profile });
-      showToast(t('import_success'));
+      showToast(t('import_success'), 'success');
       setImportUri('');
       const profs = await api.profiles();
       setProfiles(profs.profiles || []);
-    } catch (e) { setImportErr(t('import_error') + ': ' + e.message); }
+    } catch (e) {
+      setImportErr(t('import_error') + ': ' + e.message);
+    }
+    setImporting(false);
   };
 
   return h(ModalShell, { title: t('profiles'), onClose: closeModal },
@@ -816,7 +976,7 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
       h('label', { class: 'form-label' }, t('import_uri_label')),
       h('div', { style: 'display:flex;gap:8px' },
         h('input', { class: 'form-input', placeholder: t('import_uri_ph'), value: importUri, onInput: e => setImportUri(e.target.value) }),
-        h('button', { class: 'btn btn-primary btn-sm', onClick: doImport }, t('import')),
+        h('button', { class: 'btn btn-primary btn-sm', onClick: doImport, disabled: importing }, importing ? t('loading') : t('import')),
       ),
       importErr && h('div', { style: 'color:var(--error);font-size:12px;margin-top:6px' }, importErr),
     ),
@@ -919,7 +1079,8 @@ function ResolversModal({ closeModal, showToast }) {
 
   const doAdd = async () => {
     if (!addText.trim()) return;
-    const rs = addText.trim().split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+    const rs = addText.trim().split(/[\n,]+/).map(s => s.trim()).filter(Boolean)
+      .map(r => r.includes(':') ? r : r + ':53');
     try {
       await api.addToBank(rs);
       showToast(t('added') + ': ' + rs.length);
@@ -962,7 +1123,7 @@ function ResolversModal({ closeModal, showToast }) {
       ),
       h('div', { class: 'form-group' },
         h('label', { class: 'form-label' }, t('add_resolvers')),
-        h('textarea', { class: 'form-input', rows: 3, value: addText, onInput: e => setAddText(e.target.value), placeholder: '1.1.1.1:53\n8.8.8.8:53' }),
+        h('textarea', { class: 'form-input', rows: 3, value: addText, onInput: e => setAddText(e.target.value), placeholder: '1.1.1.1\n8.8.8.8' }),
       ),
       h('button', { class: 'btn btn-primary btn-sm', onClick: doAdd }, t('add')),
     ),
