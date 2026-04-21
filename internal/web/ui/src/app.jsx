@@ -30,9 +30,7 @@ async function processImageQueue() {
       const blob = await fetchImageBlob(id, ctrl.signal);
       clearTimeout(tm);
       imageCache.set(id, URL.createObjectURL(blob));
-    } catch (e) {
-      // Will retry on next render
-    }
+    } catch (e) {}
   }
   imageFetching = false;
 }
@@ -61,8 +59,12 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [hasNewMsgs, setHasNewMsgs] = useState(false);
   const [prevMsgIDs, setPrevMsgIDs] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [loadingMsg, setLoadingMsg] = useState(false);
+  const [channelPreviews, setChannelPreviews] = useState({});
   const [, forceRender] = useState(0);
   const messagesRef = useRef(null);
+  const logRef = useRef(null);
   const sseRef = useRef(null);
 
   const lang = settings.lang || 'fa';
@@ -94,6 +96,7 @@ function App() {
           setActiveProfile(profs.active || null);
         }
       } catch (e) {}
+      setLoading(false);
     })();
   }, []);
 
@@ -106,11 +109,7 @@ function App() {
       });
     };
     const handleUpdate = (data) => {
-      if (typeof data === 'object' && data.type === 'channels') {
-        loadChannels();
-      } else {
-        loadChannels();
-      }
+      loadChannels();
     };
     sseRef.current = connectSSE(handleLog, handleUpdate);
     return () => { if (sseRef.current) sseRef.current.close(); };
@@ -125,7 +124,7 @@ function App() {
         setChannels(chList);
         const newPrev = {};
         let hasNew = false;
-        chList.forEach((ch, i) => {
+        chList.forEach((ch) => {
           const nm = ch.Name || ch.name || '';
           const lid = ch.LastMsgID || ch.lastMsgID || 0;
           newPrev[nm] = lid;
@@ -140,35 +139,46 @@ function App() {
 
   useEffect(() => { loadChannels(); }, []);
 
+  const scrollToBottom = useCallback(() => {
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        if (messagesRef.current) {
+          messagesRef.current.scrollTop = messagesRef.current.scrollHeight + 1000;
+        }
+      }, 80);
+    });
+  }, []);
+
   // Load messages when channel selected
   useEffect(() => {
     if (selectedCh <= 0) return;
+    setLoadingMsg(true);
     (async () => {
       try {
         const data = await api.messages(selectedCh);
         const msgs = data.messages || [];
         setMessages(msgs);
         setGaps(data.gaps || []);
-        // Queue image prefetch
         const imgIds = [];
         msgs.forEach(m => {
           const match = (m.Text || m.text || '').match(/\[IMAGE:(\d+)\]/);
           if (match) imgIds.push(parseInt(match[1]));
         });
         if (imgIds.length > 0) queueImagePrefetch(imgIds);
-        // Update prevMsgIDs
         const ch = channels[selectedCh - 1];
         if (ch) {
           const nm = ch.Name || ch.name || '';
           const lid = ch.LastMsgID || ch.lastMsgID || 0;
           setPrevMsgIDs(p => ({ ...p, [nm]: lid }));
+          if (msgs.length > 0) {
+            const lastMsg = msgs[msgs.length - 1];
+            const lastText = (lastMsg.Text || lastMsg.text || '').replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '').substring(0, 80);
+            setChannelPreviews(p => ({ ...p, [nm]: lastText }));
+          }
         }
-        // Scroll to bottom
-        setTimeout(() => {
-          if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
-        }, 50);
+        scrollToBottom();
       } catch (e) {}
-      // Trigger refresh
+      setLoadingMsg(false);
       api.refresh(selectedCh, true).catch(() => {});
     })();
   }, [selectedCh]);
@@ -182,6 +192,12 @@ function App() {
           if (data.messages) {
             setMessages(data.messages);
             setGaps(data.gaps || []);
+            const nm = ch.Name || ch.name || '';
+            if (data.messages.length > 0) {
+              const lastMsg = data.messages[data.messages.length - 1];
+              const lastText = (lastMsg.Text || lastMsg.text || '').replace(/^\[(?:IMAGE|VIDEO|FILE|AUDIO|STICKER|GIF|POLL|CONTACT|LOCATION|REPLY)[^\]]*\](?::\d+)?\n?/, '').substring(0, 80);
+              setChannelPreviews(p => ({ ...p, [nm]: lastText }));
+            }
           }
         }).catch(() => {});
       }
@@ -206,31 +222,33 @@ function App() {
     return (ch && (ch.Name || ch.name)) || 'Channel ' + num;
   }, [channels]);
 
+  if (loading) {
+    return h('div', { class: 'app-loader' },
+      h('div', { class: 'loader-spinner' }),
+      h('div', { class: 'loader-text' }, t('loading')),
+    );
+  }
+
   return h(Fragment, null,
     h('div', { class: 'app' },
-      // Mobile overlay
       h('div', { class: 'mobile-overlay' + (sidebarOpen ? ' visible' : ''), onClick: () => setSidebarOpen(false) }),
-      // Sidebar
       h(Sidebar, {
         channels, selectedCh, selectChannel, searchQuery, setSearchQuery,
         profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen,
         doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible,
-        prevMsgIDs,
+        prevMsgIDs, channelPreviews,
       }),
-      // Chat Area
       h(ChatArea, {
         channels, selectedCh, messages, gaps, settings, lang,
         setSidebarOpen, channelName, showToast, telegramLoggedIn,
         messagesRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive,
         doRefresh, refreshing, hasNewMsgs, openModal, nextFetch,
-        logVisible, setLogVisible, logs, forceRender,
+        logVisible, setLogVisible, logs, forceRender, loadingMsg, logRef,
       }),
     ),
-    // Toasts
     toasts.length > 0 && h('div', { class: 'toast-container' },
       toasts.map(t => h('div', { key: t.id, class: 'toast' }, t.msg))
     ),
-    // Modals
     activeModal === 'settings' && h(SettingsModal, { settings, setSettings, closeModal, showToast }),
     activeModal === 'profiles' && h(ProfilesModal, { profiles, setProfiles, activeProfile, setActiveProfile, closeModal, showToast, openModal }),
     activeModal === 'profileEditor' && h(ProfileEditorModal, { profile: modalData, closeModal, showToast, openModal }),
@@ -241,7 +259,7 @@ function App() {
 }
 
 // ===== SIDEBAR =====
-function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQuery, profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen, doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible, prevMsgIDs }) {
+function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQuery, profiles, activeProfile, openModal, setSidebarOpen, sidebarOpen, doRefresh, refreshing, hasNewMsgs, logVisible, setLogVisible, prevMsgIDs, channelPreviews }) {
   const filtered = useMemo(() => {
     if (!searchQuery) return channels;
     const q = searchQuery.toLowerCase();
@@ -270,7 +288,8 @@ function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQu
         ),
         h('button', { class: 'icon-btn', onClick: () => openModal('settings'), title: t('settings') },
           h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' },
-            h('circle', { cx: 12, cy: 12, r: 3 }), h('path', { d: 'M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42' })
+            h('path', { d: 'M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z' }),
+            h('circle', { cx: 12, cy: 12, r: 3 }),
           )
         ),
         h('button', { class: 'icon-btn', onClick: () => setLogVisible(v => !v), title: 'Log' },
@@ -296,10 +315,13 @@ function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQu
       ),
     ),
     h('div', { class: 'channel-list' },
-      !channels.length && h('div', { class: 'empty-state', style: 'padding:20px' }, h('p', null, t('no_channels'))),
-      renderChannelSection('', pubs, channels, selectedCh, selectChannel, prevMsgIDs),
-      xposts.length > 0 && renderChannelSection(t('x_posts'), xposts, channels, selectedCh, selectChannel, prevMsgIDs),
-      privs.length > 0 && renderChannelSection(t('private'), privs, channels, selectedCh, selectChannel, prevMsgIDs),
+      !channels.length && h('div', { class: 'empty-state', style: 'padding:20px' },
+        h('p', null, t('no_channels')),
+        h('button', { class: 'btn btn-primary', style: 'margin-top:12px', onClick: () => openModal('profiles') }, t('set_up')),
+      ),
+      renderChannelSection('', pubs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews),
+      xposts.length > 0 && renderChannelSection(t('x_posts'), xposts, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews),
+      privs.length > 0 && renderChannelSection(t('private'), privs, channels, selectedCh, selectChannel, prevMsgIDs, channelPreviews),
     ),
     h('div', { class: 'sidebar-footer' },
       h('span', null, 'TELEGRAM: '),
@@ -310,7 +332,7 @@ function Sidebar({ channels, selectedCh, selectChannel, searchQuery, setSearchQu
   );
 }
 
-function renderChannelSection(title, items, allChannels, selectedCh, selectChannel, prevMsgIDs) {
+function renderChannelSection(title, items, allChannels, selectedCh, selectChannel, prevMsgIDs, channelPreviews) {
   if (!items.length) return null;
   return h(Fragment, null,
     title && h('div', { class: 'channel-section-title' }, title),
@@ -323,14 +345,18 @@ function renderChannelSection(title, items, allChannels, selectedCh, selectChann
       const lid = ch.LastMsgID || ch.lastMsgID || 0;
       const nm = ch.Name || ch.name || '';
       const hasNew = prevMsgIDs[nm] > 0 && lid > prevMsgIDs[nm] && !active;
+      const preview = channelPreviews[nm] || '';
       return h('div', { key: name, class: 'ch-item' + (active ? ' active' : ''), onClick: () => selectChannel(num) },
         h('div', { class: 'ch-avatar', style: 'background:' + avatarGradient(name) }, avatarLetter(name)),
         h('div', { class: 'ch-info' },
-          h('div', { class: 'ch-name' }, name,
-            isPriv && h('span', { class: 'ch-type-tag' }, t('private')),
-            isX && h('span', { class: 'ch-type-tag x-tag' }, t('x_label')),
+          h('div', { class: 'ch-name-row' },
+            h('span', { class: 'ch-name' }, name,
+              isPriv && h('span', { class: 'ch-type-tag' }, t('private')),
+              isX && h('span', { class: 'ch-type-tag x-tag' }, t('x_label')),
+            ),
+            hasNew && h('span', { class: 'ch-badge' }, 'NEW'),
           ),
-          h('div', { class: 'ch-preview' }, hasNew ? h('span', { class: 'ch-badge' }, 'NEW') : ''),
+          h('div', { class: 'ch-preview', dir: 'auto' }, preview || ' '),
         ),
       );
     }),
@@ -338,7 +364,7 @@ function renderChannelSection(title, items, allChannels, selectedCh, selectChann
 }
 
 // ===== CHAT AREA =====
-function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSidebarOpen, channelName, showToast, telegramLoggedIn, messagesRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive, doRefresh, refreshing, hasNewMsgs, openModal, nextFetch, logVisible, setLogVisible, logs, forceRender }) {
+function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSidebarOpen, channelName, showToast, telegramLoggedIn, messagesRef, msgSearch, setMsgSearch, msgSearchActive, setMsgSearchActive, doRefresh, refreshing, hasNewMsgs, openModal, nextFetch, logVisible, setLogVisible, logs, forceRender, loadingMsg, logRef }) {
   const name = selectedCh > 0 ? channelName(selectedCh) : 'thefeed';
   const ch = selectedCh > 0 ? channels[selectedCh - 1] : null;
   const canSend = ch && (ch.CanSend || ch.canSend) && telegramLoggedIn;
@@ -352,9 +378,18 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
   }, []);
 
   const scrollToBottom = useCallback(() => {
-    if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+    if (messagesRef.current) {
+      messagesRef.current.scrollTop = messagesRef.current.scrollHeight + 1000;
+    }
     setShowScroll(false);
   }, []);
+
+  // Auto-scroll log panel
+  useEffect(() => {
+    if (logVisible && logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logs, logVisible]);
 
   const handleSend = useCallback(async () => {
     if (!sendText.trim() || !selectedCh) return;
@@ -379,6 +414,12 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
         h('button', { class: 'icon-btn' + (msgSearchActive ? ' active' : ''), onClick: () => setMsgSearchActive(v => !v) },
           h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, h('circle', { cx: 11, cy: 11, r: 8 }), h('line', { x1: 21, y1: 21, x2: '16.65', y2: '16.65' }))
         ),
+        h('button', { class: 'icon-btn', onClick: () => openModal('settings'), title: t('settings') },
+          h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' },
+            h('path', { d: 'M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z' }),
+            h('circle', { cx: 12, cy: 12, r: 3 }),
+          )
+        ),
         h('button', { class: 'icon-btn', onClick: () => openModal('export') },
           h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, h('path', { d: 'M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4' }), h('polyline', { points: '7 10 12 15 17 10' }), h('line', { x1: 12, y1: 15, x2: 12, y2: 3 }))
         ),
@@ -395,7 +436,12 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
       h('button', { onClick: () => { setMsgSearchActive(false); setMsgSearch(''); } }, '✕'),
     ),
     h('div', { class: 'progress-panel', id: 'progressPanel' }),
-    h(MessageList, { messages, gaps, lang, settings, showToast, messagesRef, handleScroll, msgSearch, forceRender }),
+    loadingMsg ? h('div', { class: 'messages-container', ref: messagesRef },
+      h('div', { class: 'msg-loader' },
+        h('div', { class: 'loader-spinner' }),
+        h('div', null, t('loading')),
+      ),
+    ) : h(MessageList, { messages, gaps, lang, settings, showToast, messagesRef, handleScroll, msgSearch, forceRender }),
     showScroll && h('div', { class: 'scroll-down-btn visible', onClick: scrollToBottom },
       h('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }, h('polyline', { points: '6 9 12 15 18 9' }))
     ),
@@ -405,7 +451,7 @@ function ChatArea({ channels, selectedCh, messages, gaps, settings, lang, setSid
         h('svg', { viewBox: '0 0 24 24', fill: 'currentColor' }, h('path', { d: 'M2.01 21L23 12 2.01 3 2 10l15 2-15 2z' }))
       ),
     ),
-    logVisible && h('div', { class: 'log-panel visible' },
+    logVisible && h('div', { class: 'log-panel visible', ref: logRef },
       logs.map((l, i) => h('div', { key: i, class: 'log-line' + (String(l).includes('Error') ? ' err' : String(l).includes('OK') ? ' ok' : '') }, String(l)))
     ),
   );
@@ -470,7 +516,6 @@ function Message({ msg, text, timeStr, id, msgByID, showToast, lang, msgSearch, 
   let bodyHtml = '';
   let imageEl = null;
 
-  // Reply
   const replyMatch = text.match(/^\[REPLY\](?::(\d+))?/) || text.match(/^\[REPLY:(\d+)\]/);
   if (replyMatch) {
     const replyTag = replyMatch[0];
@@ -511,7 +556,6 @@ function Message({ msg, text, timeStr, id, msgByID, showToast, lang, msgSearch, 
     }
   }
 
-  // Apply search highlight
   if (msgSearch) {
     const norm = normalizeArabic(msgSearch.toLowerCase());
     if (norm && bodyHtml) {
@@ -556,7 +600,6 @@ function ImageBlock({ imgId, forceRender }) {
     }
   }, [imgId]);
 
-  // Poll for prefetched images
   useEffect(() => {
     if (state !== 'idle') return;
     const iv = setInterval(() => {
@@ -638,6 +681,8 @@ function SettingsModal({ settings, setSettings, closeModal, showToast }) {
   const [fontSize, setFontSize] = useState(settings.fontSize || 14);
   const [theme, setTheme] = useState(settings.theme || 'dark');
   const [lang, setLangState] = useState(settings.lang || 'fa');
+  const [debug, setDebug] = useState(settings.debug || false);
+  const [versionInfo, setVersionInfo] = useState('');
 
   const save = async (key, val) => {
     const newSettings = { ...settings, [key]: val };
@@ -647,6 +692,15 @@ function SettingsModal({ settings, setSettings, closeModal, showToast }) {
       if (key === 'theme') document.documentElement.setAttribute('data-theme', val);
       if (key === 'lang') setLang(val);
     } catch (e) { showToast(e.message); }
+  };
+
+  const checkVersion = async () => {
+    setVersionInfo(t('checking_version'));
+    try {
+      const d = await api.versionCheck();
+      if (d.latest) setVersionInfo(t('latest_version') + ': ' + d.latest + (d.upToDate ? ' ✔' : ' ⚠'));
+      else setVersionInfo(t('version_up_to_date'));
+    } catch (e) { setVersionInfo(t('version_check_failed')); }
   };
 
   return h(ModalShell, { title: t('settings'), onClose: closeModal },
@@ -671,14 +725,24 @@ function SettingsModal({ settings, setSettings, closeModal, showToast }) {
       ),
     ),
     h('div', { class: 'form-group' },
-      h('button', { class: 'btn', onClick: async () => { await api.clearCache(); showToast(t('cache_cleared')); } }, t('clear_cache_btn')),
+      h('label', { class: 'form-label' }, t('debug_mode')),
+      h('div', { class: 'toggle-group' },
+        h('button', { class: 'toggle-btn' + (debug ? ' active' : ''), onClick: () => { setDebug(true); save('debug', true); } }, t('yes')),
+        h('button', { class: 'toggle-btn' + (!debug ? ' active' : ''), onClick: () => { setDebug(false); save('debug', false); } }, t('no')),
+      ),
     ),
+    h('div', { class: 'form-group', style: 'display:flex;gap:8px' },
+      h('button', { class: 'btn', onClick: async () => { await api.clearCache(); showToast(t('cache_cleared')); } }, t('clear_cache_btn')),
+      h('button', { class: 'btn', onClick: checkVersion }, t('check_now')),
+    ),
+    versionInfo && h('div', { style: 'font-size:12px;color:var(--text-dim);margin-top:4px' }, versionInfo),
     settings.version && h('div', { style: 'font-size:11px;color:var(--text-muted);margin-top:8px' }, t('version') + ': ' + settings.version),
   );
 }
 
 function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile, closeModal, showToast, openModal }) {
   const [importUri, setImportUri] = useState('');
+  const [importErr, setImportErr] = useState('');
 
   const doSwitch = async (id) => {
     try {
@@ -699,14 +763,35 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
   };
 
   const doImport = async () => {
-    if (!importUri.trim()) return;
+    setImportErr('');
+    const uri = importUri.trim();
+    if (!uri) return;
+    if (!uri.startsWith('thefeed://')) { setImportErr(t('invalid_uri')); return; }
     try {
-      await api.saveProfile({ action: 'import', profile: { uri: importUri.trim() } });
+      const body = uri.substring('thefeed://'.length);
+      const qIdx = body.indexOf('?');
+      const path = qIdx >= 0 ? body.substring(0, qIdx) : body;
+      const params = qIdx >= 0 ? body.substring(qIdx + 1) : '';
+      const parts = path.split('/');
+      const domain = decodeURIComponent(parts[0] || '');
+      const key = decodeURIComponent(parts[1] || '');
+      let resolvers = [];
+      params.split('&').forEach(kv => {
+        const p = kv.split('=');
+        if (p[0] === 'r' && p[1]) resolvers = decodeURIComponent(p[1]).split(',').filter(Boolean);
+      });
+      if (!domain || !key) { setImportErr(t('uri_missing')); return; }
+      if (!resolvers.length) resolvers = ['8.8.8.8', '1.1.1.1'];
+      if (resolvers.length > 0) {
+        await api.addToBank(resolvers);
+      }
+      const profile = { id: '', nickname: domain, config: { domain, key, queryMode: 'single', rateLimit: 6 } };
+      await api.saveProfile({ action: 'create', profile });
       showToast(t('import_success'));
       setImportUri('');
       const profs = await api.profiles();
       setProfiles(profs.profiles || []);
-    } catch (e) { showToast(t('import_error') + ': ' + e.message); }
+    } catch (e) { setImportErr(t('import_error') + ': ' + e.message); }
   };
 
   return h(ModalShell, { title: t('profiles'), onClose: closeModal },
@@ -718,7 +803,7 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
       h('div', { class: 'profile-avatar', style: 'background:' + avatarGradient(p.nickname || p.name || p.id) }, (p.nickname || p.name || '?').charAt(0).toUpperCase()),
       h('div', { style: 'flex:1;min-width:0' },
         h('div', { style: 'font-weight:500;font-size:14px' }, p.nickname || p.name || p.id),
-        h('div', { style: 'font-size:11px;color:var(--text-dim)' }, p.domain || ''),
+        h('div', { style: 'font-size:11px;color:var(--text-dim)' }, p.config?.domain || p.domain || ''),
       ),
       p.id === activeProfile && h('span', { style: 'font-size:10px;color:var(--success);font-weight:600' }, t('active')),
       h('button', { class: 'btn-ghost btn-sm', onClick: e => { e.stopPropagation(); openModal('profileEditor', p); } }, t('edit')),
@@ -733,29 +818,43 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
         h('input', { class: 'form-input', placeholder: t('import_uri_ph'), value: importUri, onInput: e => setImportUri(e.target.value) }),
         h('button', { class: 'btn btn-primary btn-sm', onClick: doImport }, t('import')),
       ),
+      importErr && h('div', { style: 'color:var(--error);font-size:12px;margin-top:6px' }, importErr),
     ),
   );
 }
 
 function ProfileEditorModal({ profile, closeModal, showToast, openModal }) {
   const isEdit = !!profile;
+  const cfg = profile?.config || {};
   const [form, setForm] = useState({
     nickname: profile?.nickname || profile?.name || '',
-    domain: profile?.domain || '',
-    passphrase: profile?.passphrase || profile?.key || '',
-    queryMode: profile?.queryMode || 0,
-    rateLimit: profile?.rateLimit || 10,
-    scatter: profile?.scatter || 3,
-    timeout: profile?.timeout || 5000,
+    domain: cfg.domain || profile?.domain || '',
+    passphrase: cfg.key || profile?.passphrase || profile?.key || '',
+    queryMode: cfg.queryMode || profile?.queryMode || 'single',
+    rateLimit: cfg.rateLimit || profile?.rateLimit || 10,
+    scatter: cfg.scatter || profile?.scatter || 3,
+    timeout: cfg.timeout || profile?.timeout || 5,
   });
 
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
 
   const doSave = async () => {
     try {
-      const p = { ...profile, ...form, name: form.nickname, key: form.passphrase };
+      const p = {
+        id: profile?.id || '',
+        nickname: form.nickname,
+        config: {
+          domain: form.domain,
+          key: form.passphrase,
+          queryMode: form.queryMode,
+          rateLimit: parseFloat(form.rateLimit) || 10,
+          scatter: parseInt(form.scatter) || 3,
+          timeout: parseFloat(form.timeout) || 5,
+        }
+      };
       await api.saveProfile({ action: isEdit ? 'update' : 'create', profile: p });
       showToast(t('save'));
+      const profs = await api.profiles();
       openModal('profiles');
     } catch (e) { showToast(e.message); }
   };
@@ -770,8 +869,17 @@ function ProfileEditorModal({ profile, closeModal, showToast, openModal }) {
     h('div', { class: 'form-group' }, h('label', { class: 'form-label' }, t('domain')), h('input', { class: 'form-input', value: form.domain, onInput: e => update('domain', e.target.value) })),
     h('div', { class: 'form-group' }, h('label', { class: 'form-label' }, t('passphrase')), h('input', { class: 'form-input', type: 'password', value: form.passphrase, onInput: e => update('passphrase', e.target.value) })),
     h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px' },
-      h('div', { class: 'form-group' }, h('label', { class: 'form-label' }, t('rate_limit')), h('input', { class: 'form-input', type: 'number', value: form.rateLimit, onInput: e => update('rateLimit', parseInt(e.target.value)) })),
-      h('div', { class: 'form-group' }, h('label', { class: 'form-label' }, t('scatter')), h('input', { class: 'form-input', type: 'number', value: form.scatter, onInput: e => update('scatter', parseInt(e.target.value)) })),
+      h('div', { class: 'form-group' }, h('label', { class: 'form-label' }, t('rate_limit')), h('input', { class: 'form-input', type: 'number', value: form.rateLimit, onInput: e => update('rateLimit', e.target.value) })),
+      h('div', { class: 'form-group' }, h('label', { class: 'form-label' }, t('scatter')), h('input', { class: 'form-input', type: 'number', value: form.scatter, onInput: e => update('scatter', e.target.value) })),
+    ),
+    h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px' },
+      h('div', { class: 'form-group' }, h('label', { class: 'form-label' }, t('timeout') + ' (s)'), h('input', { class: 'form-input', type: 'number', value: form.timeout, onInput: e => update('timeout', e.target.value) })),
+      h('div', { class: 'form-group' }, h('label', { class: 'form-label' }, t('query_mode')),
+        h('select', { class: 'form-select', value: form.queryMode, onChange: e => update('queryMode', e.target.value) },
+          h('option', { value: 'single' }, 'Single'),
+          h('option', { value: 'parallel' }, 'Parallel'),
+        ),
+      ),
     ),
   );
 }

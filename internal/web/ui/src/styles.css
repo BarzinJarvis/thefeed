@@ -444,6 +444,26 @@ a:hover { text-decoration: underline; }
   .mobile-overlay.visible { display: block; }
 }
 
+/* App Loader */
+.app-loader {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100vh; background: var(--bg2); gap: 16px;
+}
+.loader-spinner {
+  width: 36px; height: 36px; border: 3px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite;
+}
+.loader-text { font-size: 14px; color: var(--text-dim); }
+.msg-loader {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  flex: 1; gap: 12px; padding: 40px; color: var(--text-dim);
+}
+.msg-loader .loader-spinner { width: 28px; height: 28px; border-width: 2.5px; }
+
+/* Channel Name Row */
+.ch-name-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.ch-name-row .ch-name { flex: 1; min-width: 0; }
+
 /* Animations */
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
