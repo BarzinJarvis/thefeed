@@ -82,6 +82,10 @@ const strings = {
     new_message_from: 'پیام جدید از {name}',
     next_update_in: 'بروزرسانی بعدی: {t}',
     enable_notifications: 'فعال‌سازی اعلان‌ها',
+    quick_scan: 'اسکن سریع',
+    share_link: 'لینک اشتراک',
+    link_copied: 'لینک کپی شد',
+    confirm_delete: 'آیا مطمئن هستید؟',
   },
   en: {
     search: 'Search', settings: 'Settings', profiles: 'Profiles', close: 'Close',
@@ -166,6 +170,10 @@ const strings = {
     new_message_from: 'New message from {name}',
     next_update_in: 'Next update: {t}',
     enable_notifications: 'Enable Notifications',
+    quick_scan: 'Quick Scan',
+    share_link: 'Share Link',
+    link_copied: 'Link copied',
+    confirm_delete: 'Are you sure?',
   }
 };
 

@@ -40,24 +40,28 @@ let audioCtx = null;
 function playNotifSound() {
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-    osc.frequency.setValueAtTime(1100, audioCtx.currentTime + 0.08);
-    osc.frequency.setValueAtTime(880, audioCtx.currentTime + 0.16);
-    gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
-    osc.start(audioCtx.currentTime);
-    osc.stop(audioCtx.currentTime + 0.3);
+    const t = audioCtx.currentTime;
+    const notes = [523.25, 659.25, 783.99];
+    notes.forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t + i * 0.1);
+      gain.gain.setValueAtTime(0.12, t + i * 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.1 + 0.2);
+      osc.start(t + i * 0.1);
+      osc.stop(t + i * 0.1 + 0.2);
+    });
   } catch {}
 }
 
 function showBrowserNotification(title, body) {
   try {
-    if (Notification.permission === 'granted' && document.hidden) {
+    if (typeof Android !== 'undefined' && Android.showNotification) {
+      Android.showNotification(title, body);
+    } else if (Notification.permission === 'granted' && document.hidden) {
       new Notification(title, { body, icon: '/static/icon.png', tag: 'thefeed-msg' });
     }
   } catch {}
@@ -67,6 +71,29 @@ function requestNotifPermission() {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
   }
+}
+
+// ===== CONFIRM DIALOG (replaces native confirm()) =====
+let confirmResolve = null;
+function showConfirm(message) {
+  return new Promise(resolve => {
+    confirmResolve = resolve;
+    const ev = new CustomEvent('show-confirm', { detail: message });
+    window.dispatchEvent(ev);
+  });
+}
+
+function ConfirmDialog({ message, onResult }) {
+  if (!message) return null;
+  return h('div', { class: 'confirm-overlay', onClick: e => { if (e.target === e.currentTarget) onResult(false); } },
+    h('div', { class: 'confirm-dialog' },
+      h('div', { class: 'confirm-body' }, message),
+      h('div', { class: 'confirm-actions' },
+        h('button', { class: 'btn', onClick: () => onResult(false) }, t('cancel')),
+        h('button', { class: 'btn btn-danger', onClick: () => onResult(true) }, t('delete')),
+      ),
+    ),
+  );
 }
 
 // ===== MAIN APP =====
@@ -99,6 +126,7 @@ function App() {
   const [preloadProgress, setPreloadProgress] = useState(null);
   const [channelLoadingMap] = useState({});
   const [countdown, setCountdown] = useState('');
+  const [confirmMsg, setConfirmMsg] = useState(null);
   const [, forceRender] = useState(0);
   const messagesRef = useRef(null);
   const bottomRef = useRef(null);
@@ -220,6 +248,18 @@ function App() {
       }
     }, 1000);
     return () => clearInterval(iv);
+  }, []);
+
+  // Confirm dialog listener
+  useEffect(() => {
+    const handler = (e) => setConfirmMsg(e.detail);
+    window.addEventListener('show-confirm', handler);
+    return () => window.removeEventListener('show-confirm', handler);
+  }, []);
+
+  const handleConfirmResult = useCallback((result) => {
+    setConfirmMsg(null);
+    if (confirmResolve) { confirmResolve(result); confirmResolve = null; }
   }, []);
 
   // Load channels
@@ -387,10 +427,11 @@ function App() {
     ),
     activeModal === 'settings' && h(SettingsModal, { settings, setSettings, closeModal, showToast }),
     activeModal === 'profiles' && h(ProfilesModal, { profiles, setProfiles, activeProfile, setActiveProfile, closeModal, showToast, openModal }),
-    activeModal === 'profileEditor' && h(ProfileEditorModal, { profile: modalData, closeModal, showToast, openModal }),
+    activeModal === 'profileEditor' && h(ProfileEditorModal, { profile: modalData, closeModal, showToast, openModal, setProfiles }),
     activeModal === 'export' && h(ExportModal, { messages, closeModal, showToast, lang }),
     activeModal === 'resolvers' && h(ResolversModal, { closeModal, showToast }),
     activeModal === 'scanner' && h(ScannerModal, { profiles, closeModal, showToast }),
+    h(ConfirmDialog, { message: confirmMsg, onResult: handleConfirmResult }),
   );
 }
 
@@ -906,12 +947,21 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
   };
 
   const doDelete = async (id) => {
-    if (!confirm(t('delete') + '?')) return;
+    const ok = await showConfirm(t('delete') + '?');
+    if (!ok) return;
     try {
       await api.saveProfile({ action: 'delete', profile: { id } });
       setProfiles(ps => ps.filter(p => p.id !== id));
       showToast(t('removed'));
     } catch (e) { showToast(e.message); }
+  };
+
+  const doShare = (p) => {
+    const domain = p.config?.domain || p.domain || '';
+    const key = p.config?.key || p.passphrase || p.key || '';
+    if (!domain || !key) { showToast(t('uri_missing')); return; }
+    const uri = 'thefeed://' + encodeURIComponent(domain) + '/' + encodeURIComponent(key);
+    navigator.clipboard.writeText(uri).then(() => showToast(t('copied'))).catch(() => {});
   };
 
   const doImport = async () => {
@@ -934,21 +984,13 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
         if (k === 'r' && v) resolvers = decodeURIComponent(v).split(',').filter(Boolean);
       });
       if (!domain || !key) { setImportErr(t('uri_missing')); setImporting(false); return; }
-      // Normalize resolver addresses — add :53 if no port
       resolvers = resolvers.map(r => r.includes(':') ? r : r + ':53');
       if (!resolvers.length) resolvers = ['8.8.8.8:53', '1.1.1.1:53'];
-      // Add resolvers to bank first
       try { await api.addToBank(resolvers); } catch (e) { /* bank add is best-effort */ }
-      // Create the profile
       const profile = {
         id: '',
         nickname: domain,
-        config: {
-          domain: domain,
-          key: key,
-          queryMode: 'single',
-          rateLimit: 6,
-        }
+        config: { domain, key, queryMode: 'single', rateLimit: 6 }
       };
       await api.saveProfile({ action: 'create', profile });
       showToast(t('import_success'), 'success');
@@ -964,17 +1006,23 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
   return h(ModalShell, { title: t('profiles'), onClose: closeModal },
     profiles.map(p => h('div', {
       key: p.id,
-      style: 'display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:8px;cursor:pointer;background:' + (p.id === activeProfile ? 'var(--accent-soft)' : 'transparent'),
+      class: 'profile-card' + (p.id === activeProfile ? ' active' : ''),
       onClick: () => doSwitch(p.id),
     },
       h('div', { class: 'profile-avatar', style: 'background:' + avatarGradient(p.nickname || p.name || p.id) }, (p.nickname || p.name || '?').charAt(0).toUpperCase()),
       h('div', { style: 'flex:1;min-width:0' },
-        h('div', { style: 'font-weight:500;font-size:14px' }, p.nickname || p.name || p.id),
-        h('div', { style: 'font-size:11px;color:var(--text-dim)' }, p.config?.domain || p.domain || ''),
+        h('div', { class: 'profile-card-name' }, p.nickname || p.name || p.id),
+        h('div', { class: 'profile-card-domain' }, p.config?.domain || p.domain || ''),
       ),
-      p.id === activeProfile && h('span', { style: 'font-size:10px;color:var(--success);font-weight:600' }, t('active')),
-      h('button', { class: 'btn-ghost btn-sm', onClick: e => { e.stopPropagation(); openModal('profileEditor', p); } }, t('edit')),
-      h('button', { class: 'btn-ghost btn-sm', style: 'color:var(--error)', onClick: e => { e.stopPropagation(); doDelete(p.id); } }, '✕'),
+      p.id === activeProfile && h('span', { class: 'profile-active-badge' }, t('active')),
+      h('div', { class: 'profile-card-actions' },
+        h('button', { class: 'btn-ghost btn-sm', onClick: e => { e.stopPropagation(); doShare(p); }, title: t('share') },
+          h('svg', { viewBox: '0 0 24 24', width: 14, height: 14, fill: 'none', stroke: 'currentColor', 'stroke-width': '2' },
+            h('path', { d: 'M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8' }), h('polyline', { points: '16 6 12 2 8 6' }), h('line', { x1: 12, y1: 2, x2: 12, y2: 15 }))
+        ),
+        h('button', { class: 'btn-ghost btn-sm', onClick: e => { e.stopPropagation(); openModal('profileEditor', p); } }, t('edit')),
+        h('button', { class: 'btn-ghost btn-sm', style: 'color:var(--error)', onClick: e => { e.stopPropagation(); doDelete(p.id); } }, '✕'),
+      ),
     )),
     h('div', { style: 'margin-top:12px' },
       h('button', { class: 'btn btn-primary', style: 'width:100%', onClick: () => openModal('profileEditor', null) }, '+ ' + t('add_profile')),
@@ -990,7 +1038,7 @@ function ProfilesModal({ profiles, setProfiles, activeProfile, setActiveProfile,
   );
 }
 
-function ProfileEditorModal({ profile, closeModal, showToast, openModal }) {
+function ProfileEditorModal({ profile, closeModal, showToast, openModal, setProfiles }) {
   const isEdit = !!profile;
   const cfg = profile?.config || {};
   const [form, setForm] = useState({
@@ -1022,6 +1070,7 @@ function ProfileEditorModal({ profile, closeModal, showToast, openModal }) {
       await api.saveProfile({ action: isEdit ? 'update' : 'create', profile: p });
       showToast(t('save'));
       const profs = await api.profiles();
+      if (setProfiles) setProfiles(profs.profiles || []);
       openModal('profiles');
     } catch (e) { showToast(e.message); }
   };
@@ -1078,11 +1127,19 @@ function ResolversModal({ closeModal, showToast }) {
   const [active, setActive] = useState([]);
   const [bank, setBank] = useState([]);
   const [addText, setAddText] = useState('');
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    api.resolversActive().then(d => setActive(d.resolvers || d || [])).catch(() => {});
-    api.resolversBank().then(d => setBank(d.bank || d || [])).catch(() => {});
-  }, []);
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const [a, b] = await Promise.all([api.resolversActive(), api.resolversBank()]);
+      setActive(a.resolvers || a || []);
+      setBank(b.bank || b || []);
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { refresh(); }, []);
 
   const doAdd = async () => {
     if (!addText.trim()) return;
@@ -1090,11 +1147,10 @@ function ResolversModal({ closeModal, showToast }) {
       .map(r => r.includes(':') ? r : r + ':53');
     try {
       await api.addToBank(rs);
-      showToast(t('added') + ': ' + rs.length);
+      showToast(t('added') + ': ' + rs.length, 'success');
       setAddText('');
-      const d = await api.resolversBank();
-      setBank(d.bank || d || []);
-    } catch (e) { showToast(e.message); }
+      await refresh();
+    } catch (e) { showToast(e.message, 'error'); }
   };
 
   const doRemove = async (addr) => {
@@ -1105,34 +1161,55 @@ function ResolversModal({ closeModal, showToast }) {
   };
 
   return h(ModalShell, { title: t('resolvers_title'), onClose: closeModal },
-    h('div', { class: 'toggle-group', style: 'margin-bottom:12px' },
-      h('button', { class: 'toggle-btn' + (tab === 'active' ? ' active' : ''), onClick: () => setTab('active') }, t('resolver_tab_active') + ' (' + active.length + ')'),
-      h('button', { class: 'toggle-btn' + (tab === 'bank' ? ' active' : ''), onClick: () => setTab('bank') }, t('resolver_tab_bank') + ' (' + bank.length + ')'),
+    h('div', { class: 'resolver-tabs' },
+      h('button', { class: 'resolver-tab' + (tab === 'active' ? ' active' : ''), onClick: () => setTab('active') },
+        h('span', { class: 'resolver-tab-count' }, active.length),
+        h('span', null, t('resolver_tab_active')),
+      ),
+      h('button', { class: 'resolver-tab' + (tab === 'bank' ? ' active' : ''), onClick: () => setTab('bank') },
+        h('span', { class: 'resolver-tab-count' }, bank.length),
+        h('span', null, t('resolver_tab_bank')),
+      ),
     ),
-    tab === 'active' ? h(Fragment, null,
+    loading ? h('div', { class: 'msg-loader', style: 'padding:30px' },
+      h('div', { class: 'loader-spinner' }), h('div', null, t('loading')),
+    ) : tab === 'active' ? h(Fragment, null,
       active.length === 0 && h('div', { class: 'info-note' }, t('no_active_resolvers')),
-      active.map(r => {
-        const addr = r.addr || r.Addr || r;
-        const score = r.score || r.Score || 0;
-        return h('div', { key: addr, class: 'resolver-item' },
-          h('span', { class: 'resolver-addr' }, addr),
-          h('span', { class: 'resolver-score' }, score.toFixed ? score.toFixed(1) : score),
-          h('button', { class: 'resolver-remove', onClick: () => doRemove(addr) }, '✕'),
-        );
-      }),
-      h('button', { class: 'btn btn-sm', style: 'margin-top:8px', onClick: async () => { await api.resetStats(); showToast(t('reset_scoreboard')); } }, t('reset_scoreboard')),
-    ) : h(Fragment, null,
-      h('div', { style: 'max-height:200px;overflow-y:auto;margin-bottom:10px' },
-        bank.map(r => {
+      h('div', { class: 'resolver-list' },
+        active.map((r, i) => {
           const addr = r.addr || r.Addr || r;
-          return h('div', { key: addr, class: 'resolver-item' }, h('span', { class: 'resolver-addr' }, addr));
+          const score = r.score || r.Score || 0;
+          const scoreClass = score >= 8 ? ' good' : score >= 4 ? '' : ' bad';
+          return h('div', { key: addr, class: 'resolver-item' },
+            h('span', { class: 'resolver-num' }, i + 1),
+            h('span', { class: 'resolver-addr' }, addr),
+            h('span', { class: 'resolver-score-badge' + scoreClass }, score.toFixed ? score.toFixed(1) : score),
+            h('button', { class: 'resolver-remove', onClick: () => doRemove(addr) }, '✕'),
+          );
         }),
       ),
-      h('div', { class: 'form-group' },
-        h('label', { class: 'form-label' }, t('add_resolvers')),
-        h('textarea', { class: 'form-input', rows: 3, value: addText, onInput: e => setAddText(e.target.value), placeholder: '1.1.1.1\n8.8.8.8' }),
+      h('div', { class: 'resolver-actions' },
+        h('button', { class: 'btn btn-sm', onClick: async () => { await api.resetStats(); showToast(t('reset_scoreboard')); await refresh(); } }, t('reset_scoreboard')),
+        h('button', { class: 'btn btn-sm', onClick: refresh },
+          h('svg', { viewBox: '0 0 24 24', width: 12, height: 12, fill: 'none', stroke: 'currentColor', 'stroke-width': '2' },
+            h('polyline', { points: '23 4 23 10 17 10' }), h('path', { d: 'M20.49 15a9 9 0 11-2.12-9.36L23 10' })),
+          ' Refresh'),
       ),
-      h('button', { class: 'btn btn-primary btn-sm', onClick: doAdd }, t('add')),
+    ) : h(Fragment, null,
+      h('div', { class: 'resolver-list' },
+        bank.map((r, i) => {
+          const addr = r.addr || r.Addr || r;
+          return h('div', { key: addr, class: 'resolver-item compact' },
+            h('span', { class: 'resolver-num' }, i + 1),
+            h('span', { class: 'resolver-addr' }, addr),
+          );
+        }),
+      ),
+      h('div', { class: 'form-group', style: 'margin-top:12px' },
+        h('label', { class: 'form-label' }, t('add_resolvers')),
+        h('textarea', { class: 'form-input', rows: 2, value: addText, onInput: e => setAddText(e.target.value), placeholder: '1.1.1.1\n8.8.8.8' }),
+      ),
+      h('button', { class: 'btn btn-primary btn-sm', onClick: doAdd, disabled: !addText.trim() }, t('add')),
     ),
   );
 }
@@ -1140,15 +1217,46 @@ function ResolversModal({ closeModal, showToast }) {
 function ScannerModal({ profiles, closeModal, showToast }) {
   const [targets, setTargets] = useState('');
   const [state, setScanState] = useState('idle');
+  const [paused, setPaused] = useState(false);
   const [progress, setProgress] = useState({ scanned: 0, total: 0, found: 0 });
   const [results, setResults] = useState([]);
   const [presets, setPresets] = useState([]);
+  const [applying, setApplying] = useState(false);
   const timerRef = useRef(null);
 
   useEffect(() => {
     api.scannerPresets().then(d => setPresets(d.presets || [])).catch(() => {});
+    api.scannerProgress().then(p => {
+      if (p.state === 'running' || p.state === 'paused') {
+        setScanState('running');
+        setPaused(p.state === 'paused');
+        setProgress({ scanned: p.scanned || 0, total: p.total || 0, found: p.found || 0 });
+        setResults(p.results || []);
+        startPolling();
+      } else if (p.results && p.results.length > 0) {
+        setScanState('done');
+        setResults(p.results);
+        setProgress({ scanned: p.scanned || 0, total: p.total || 0, found: p.found || 0 });
+      }
+    }).catch(() => {});
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, []);
+
+  const startPolling = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(async () => {
+      try {
+        const p = await api.scannerProgress();
+        setProgress({ scanned: p.scanned || 0, total: p.total || 0, found: p.found || 0 });
+        setResults(p.results || []);
+        setPaused(p.state === 'paused');
+        if (p.state === 'done' || p.state === 'idle') {
+          setScanState('done');
+          clearInterval(timerRef.current);
+        }
+      } catch {}
+    }, 1000);
+  };
 
   const startScan = async () => {
     if (!targets.trim()) return;
@@ -1159,68 +1267,96 @@ function ScannerModal({ profiles, closeModal, showToast }) {
         : { targets: targets.trim().split(/[\n,]+/).map(s => s.trim()).filter(Boolean), rateLimit: 500, timeout: 3000, maxIPs: 1000 };
       await api.scannerStart(scanReq);
       setScanState('running');
-      timerRef.current = setInterval(async () => {
-        try {
-          const p = await api.scannerProgress();
-          setProgress({ scanned: p.scanned || 0, total: p.total || 0, found: p.found || 0 });
-          setResults(p.results || []);
-          if (p.state === 'done' || p.state === 'idle') {
-            setScanState('done');
-            clearInterval(timerRef.current);
-          }
-        } catch {}
-      }, 1000);
+      setPaused(false);
+      startPolling();
+    } catch (e) { showToast(e.message); }
+  };
+
+  const togglePause = async () => {
+    try {
+      if (paused) { await api.scannerResume(); setPaused(false); }
+      else { await api.scannerPause(); setPaused(true); }
     } catch (e) { showToast(e.message); }
   };
 
   const applyResults = async () => {
     const addrs = results.map(r => r.ip || r.addr);
     if (!addrs.length) return;
+    setApplying(true);
     try {
       await api.addToBank(addrs);
-      showToast(t('scanner_applied') + ': ' + addrs.length);
-    } catch (e) { showToast(e.message); }
+      showToast(t('scanner_applied') + ': ' + addrs.length, 'success');
+    } catch (e) { showToast(e.message, 'error'); }
+    setApplying(false);
   };
+
+  const pct = progress.total ? Math.round(progress.scanned / progress.total * 100) : 0;
 
   return h(ModalShell, { title: t('scanner_title'), onClose: closeModal },
     state === 'idle' || state === 'done' ? h(Fragment, null,
+      presets.length > 0 && h('div', { class: 'scanner-presets' },
+        h('div', { class: 'scanner-presets-label' }, t('quick_scan') || 'Quick Scan'),
+        presets.map(p => h('button', {
+          key: p.name,
+          class: 'scanner-preset-btn' + (targets.trim() === p.name ? ' selected' : ''),
+          onClick: () => { setTargets(p.name); }
+        },
+          h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', 'stroke-width': '2' },
+            h('path', { d: 'M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.66 0 3-4.03 3-9s-1.34-9-3-9m0 18c-1.66 0-3-4.03-3-9s1.34-9 3-9' })),
+          h('div', null,
+            h('div', { class: 'scanner-preset-name' }, p.label || p.name),
+            h('div', { class: 'scanner-preset-count' }, p.count + ' IPs'),
+          ),
+        ))
+      ),
       h('div', { class: 'form-group' },
         h('label', { class: 'form-label' }, t('scanner_targets')),
-        h('textarea', { class: 'form-input', rows: 3, value: targets, onInput: e => setTargets(e.target.value), placeholder: '1.0.0.0/24\n8.8.4.0/24' }),
+        h('textarea', { class: 'form-input', rows: 2, value: targets, onInput: e => setTargets(e.target.value), placeholder: '1.0.0.0/24, 8.8.4.0/24' }),
       ),
-      presets.length > 0 && h('div', { style: 'margin-bottom:12px' },
-        h('div', { style: 'font-size:11px;color:var(--text-dim);margin-bottom:6px;font-weight:500' }, t('quick_scan') || 'Quick Scan'),
-        h('div', { style: 'display:flex;flex-wrap:wrap;gap:6px' },
-          presets.map(p => h('button', {
-            key: p.name,
-            class: 'btn btn-primary btn-sm',
-            style: targets.trim() === p.name ? 'box-shadow:0 0 0 2px var(--accent)' : '',
-            onClick: () => setTargets(p.name)
-          }, '🔍 ' + (p.label || p.name) + ' (' + p.count + ' IPs)'))
-        ),
-      ),
-      h('button', { class: 'btn btn-primary', onClick: startScan }, t('scanner_start')),
+      h('button', { class: 'btn btn-primary', style: 'width:100%', onClick: startScan, disabled: !targets.trim() }, t('scanner_start')),
       results.length > 0 && h(Fragment, null,
-        h('div', { style: 'margin-top:14px;font-size:12px;color:var(--text-dim)' }, t('scanner_found') + ': ' + results.length),
-        h('div', { class: 'scanner-results', style: 'margin-top:8px' },
-          results.map(r => h('div', { key: r.ip || r.addr, class: 'scan-result' },
+        h('div', { class: 'scanner-results-header' },
+          h('span', null, t('scanner_found') + ': ' + results.length),
+          h('button', { class: 'btn btn-primary btn-sm', onClick: applyResults, disabled: applying },
+            applying ? t('loading') : t('apply') + ' (' + results.length + ')'),
+        ),
+        h('div', { class: 'scanner-results' },
+          results.map((r, i) => h('div', { key: r.ip || r.addr, class: 'scan-result' },
+            h('span', { class: 'scan-result-num' }, i + 1),
             h('span', { class: 'resolver-addr' }, r.ip || r.addr),
-            h('span', { class: 'resolver-score' }, (r.latencyMs || r.latency || 0) + 'ms'),
+            h('span', { class: 'scan-result-latency' + ((r.latencyMs || r.latency || 0) < 100 ? ' fast' : (r.latencyMs || r.latency || 0) < 300 ? '' : ' slow') },
+              (r.latencyMs || r.latency || 0) + 'ms'),
           ))
         ),
-        h('button', { class: 'btn btn-primary btn-sm', style: 'margin-top:8px', onClick: applyResults }, t('apply') + ' (' + results.length + ')'),
       ),
     ) : h(Fragment, null,
-      h('div', { style: 'text-align:center;padding:20px' },
-        h('div', { class: 'pulsing', style: 'font-size:16px;margin-bottom:8px' }, t('scanner_running')),
-        h('div', { style: 'font-size:13px;color:var(--text-dim)' }, progress.scanned + ' / ' + progress.total),
-        h('div', { class: 'progress-bar', style: 'margin-top:10px' },
-          h('div', { class: 'progress-fill', style: 'width:' + (progress.total ? Math.round(progress.scanned / progress.total * 100) : 0) + '%' }),
+      h('div', { class: 'scanner-running-panel' },
+        h('div', { class: 'scanner-running-icon' + (paused ? '' : ' pulsing') },
+          h('svg', { viewBox: '0 0 24 24', width: 32, height: 32, fill: 'none', stroke: 'currentColor', 'stroke-width': '2' },
+            h('circle', { cx: 11, cy: 11, r: 8 }), h('line', { x1: 21, y1: 21, x2: '16.65', y2: '16.65' }))
         ),
-        h('div', { style: 'margin-top:12px;font-size:12px;color:var(--success)' }, t('scanner_found') + ': ' + progress.found),
+        h('div', { class: 'scanner-running-status' }, paused ? t('scanner_paused') : t('scanner_running')),
+        h('div', { class: 'scanner-running-pct' }, pct + '%'),
+        h('div', { class: 'progress-bar scanner-progress' },
+          h('div', { class: 'progress-fill' + (paused ? ' paused' : ''), style: 'width:' + pct + '%' }),
+        ),
+        h('div', { class: 'scanner-running-stats' },
+          h('div', null, h('span', { class: 'scanner-stat-val' }, progress.scanned), h('span', { class: 'scanner-stat-label' }, ' / ' + progress.total + ' scanned')),
+          h('div', null, h('span', { class: 'scanner-stat-val success' }, progress.found), h('span', { class: 'scanner-stat-label' }, ' ' + t('scanner_found').toLowerCase())),
+        ),
+        results.length > 0 && h('div', { class: 'scanner-live-results' },
+          results.slice(-5).map(r => h('div', { key: r.ip || r.addr, class: 'scan-result compact' },
+            h('span', { class: 'resolver-addr' }, r.ip || r.addr),
+            h('span', { class: 'scan-result-latency fast' }, (r.latencyMs || r.latency || 0) + 'ms'),
+          ))
+        ),
       ),
-      h('div', { style: 'display:flex;gap:8px;justify-content:center;margin-top:12px' },
-        h('button', { class: 'btn btn-danger btn-sm', onClick: async () => { await api.scannerStop(); setScanState('done'); clearInterval(timerRef.current); } }, t('scanner_stop')),
+      h('div', { class: 'scanner-running-actions' },
+        h('button', { class: 'btn btn-sm', onClick: togglePause },
+          paused ? t('scanner_resume') : t('scanner_pause')),
+        h('button', { class: 'btn btn-danger btn-sm', onClick: async () => {
+          await api.scannerStop(); setScanState('done'); clearInterval(timerRef.current);
+        } }, t('scanner_stop')),
       ),
     ),
   );
